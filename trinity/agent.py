@@ -15,11 +15,24 @@ MAX_ROUNDS = 8
 MAX_HISTORY_MESSAGES = 48
 KEEP_HISTORY_MESSAGES = 28
 
+DESKTOP_ONLY_REPLY = (
+    "Opening apps, folders, and files only works at the PC, not over the phone link. "
+    "From here I can research, check the weather, and handle your notes and memory."
+)
+
 
 class Agent:
-    def __init__(self, brain: Brain, memory: Memory | None = None) -> None:
+    def __init__(
+        self,
+        brain: Brain,
+        memory: Memory | None = None,
+        allowed_tools: frozenset[str] | None = None,
+        remote: bool = False,
+    ) -> None:
         self.brain = brain
         self.memory = memory or Memory()
+        self.allowed_tools = allowed_tools
+        self.remote = remote
         self.history: list[dict[str, Any]] = []
         self._session_summary = ""
         self._turn_count = 0
@@ -47,19 +60,32 @@ class Agent:
             yield ("activity", "saved a personal memory")
             yield ("trace", "Saved a clear personal fact to long-term memory")
         hint = routing_hint(user_text, self.memory.get_fact("home location") or "")
+        if hint and self.allowed_tools is not None:
+            named = _hint_tool(hint)
+            if named and named not in self.allowed_tools:
+                # Asking for a desktop-only action; answer plainly instead of
+                # steering the model toward a tool this session cannot use.
+                yield ("trace", f"{named} is unavailable in this session")
+                reply = DESKTOP_ONLY_REPLY
+                self.history.append({"role": "user", "content": user_text})
+                self.history.append({"role": "assistant", "content": reply})
+                yield ("final", reply)
+                return
         payload = user_text
         if hint:
             payload = f"{user_text}\n\n[Trinity routing hint: {hint}]"
         self.history.append({"role": "user", "content": payload})
         self._trim()
-        tools = schemas()
+        tools = schemas(self.allowed_tools)
         final = ""
         for _round in range(MAX_ROUNDS):
             messages = [
                 {
                     "role": "system",
                     "content": build_system_prompt(
-                        self.memory.format_for_prompt(), self._session_summary
+                        self.memory.format_for_prompt(),
+                        self._session_summary,
+                        remote=self.remote,
                     ),
                 },
                 *self.history,
@@ -77,7 +103,7 @@ class Agent:
                 tool_calls = _parse_text_tools(content)
             if not tool_calls and _round == 0:
                 forced = _force_from_hint(hint)
-                if forced:
+                if forced and (self.allowed_tools is None or forced[0] in self.allowed_tools):
                     name, args = forced
                     tool_calls = [{"function": {"name": name, "arguments": args}}]
             if tool_calls:
@@ -95,7 +121,7 @@ class Agent:
                     yield ("status", name.replace("_", " "))
                     yield ("activity", f"{name} {pretty_args(args)}".strip())
                     yield ("trace", f"Using {name}: {pretty_args(args) or 'no arguments'}")
-                    result = dispatch(name, args, self.memory)
+                    result = dispatch(name, args, self.memory, self.allowed_tools)
                     yield ("trace", f"{name} finished: {_brief(result)}")
                     self.history.append(
                         {
@@ -109,7 +135,8 @@ class Agent:
             if final:
                 self.history.append({"role": "assistant", "content": final})
             yield ("trace", "Response ready")
-            yield ("final", final or "Done.")
+            # An empty reply must not sound like the request succeeded.
+            yield ("final", final or "I don't have an answer for that one.")
             return
         yield ("final", final or "I ran out of tool steps. Try asking in a smaller piece.")
 
@@ -149,6 +176,11 @@ class Agent:
         except BrainError:
             return self._session_summary
         return str(message.get("content") or self._session_summary).strip()
+
+
+def _hint_tool(hint: str) -> str | None:
+    match = re.match(r"Call (\w+)\b", hint)
+    return match.group(1) if match else None
 
 
 def _force_from_hint(hint: str | None) -> tuple[str, dict[str, Any]] | None:

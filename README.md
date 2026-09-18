@@ -13,6 +13,7 @@ Local desktop assistant: chat, voice, long-term memory, app launching, and live 
 - **Remember** — durable facts in a local SQLite store (shown in the Memory panel)
 - **Research** — web search, Wikipedia, page reading, weather
 - **Utilities** — time, clipboard, filename search under your user profile, notes
+- **Phone link** — she can text your phone, and you can message her back and get answers
 
 She uses tools for real actions. She should not claim she opened something unless the tool ran.
 
@@ -44,6 +45,23 @@ Use `Lessac` or `Ryan` in place of `Amy` to add those local choices. The voice m
 - “Research the latest SpaceX launch and summarize it”
 - “What do you remember about me?”
 
+## Phone link
+
+Two-way messaging over [ntfy](https://ntfy.sh) — free, no account needed.
+
+1. Install the **ntfy** app on your phone
+2. Open Trinity's **Phone** tab and turn on **Enable phone link**
+3. Subscribe your phone to both topics shown there
+4. Press **Send test message** to confirm it arrives
+
+She messages you on the outbound topic; anything you publish to the inbound topic she answers. Ask her to "text me when you're done" and she uses it on her own.
+
+This works while this PC is awake and Trinity is running. Messages you send while it is asleep are answered when she next starts, because she resumes from the last message she saw.
+
+Your topics are generated on first run and kept in `data/phone_link.json`, which git ignores — they never reach a commit.
+
+**Treat the topic names like passwords.** On the public `ntfy.sh` server the topic name is the only thing protecting them, which is why each install generates its own random pair. Phone messages are deliberately limited to research, weather, memory, notes, and texting — they cannot open apps, read your clipboard, or search your files. The Phone tab has a switch to lift that restriction; leaving it off means a leaked topic cannot drive your PC. Self-host ntfy with an access token for stronger protection.
+
 ## Config
 
 `config.json`
@@ -57,6 +75,10 @@ Use `Lessac` or `Ryan` in place of `Amy` to add those local choices. The voice m
 | `voice.whisper_model` | `tiny.en` or `base.en` |
 | `voice.piper_voice` | Local Piper voice model currently selected |
 | `voice.piper_length_scale` | Speaking pace; below 1.0 is faster |
+| `messaging.enabled` | Whether the phone link listens on startup |
+| `messaging.server` | ntfy server, `https://ntfy.sh` or your own |
+| `messaging.token` | Access token for a self-hosted ntfy; put it in `data/phone_link.json` so it stays out of git |
+| `messaging.remote_can_control_pc` | Off by default; on lets phone messages use every tool |
 
 Memory lives in `data/trinity.db` (not sent anywhere). **New session** clears the chat, not long-term memory.
 
@@ -70,4 +92,12 @@ Trinity also captures unmistakable personal facts on her own — your name, wher
 
 ## Local-first privacy boundary
 
-The brain, memory, speech recognition, and speech synthesis operate locally. Trinity does not have a cloud-AI fallback, telemetry, auto-updates, or background online activity. The only runtime features that contact the internet are browser links you explicitly ask to open and the research tools you ask her to use.
+The brain, memory, speech recognition, and speech synthesis operate locally. Trinity has no cloud-AI fallback, telemetry, or auto-updates: your words are never sent to an external AI service.
+
+Three things do reach the internet, all at your request:
+
+- research tools you ask her to use
+- browser links you ask her to open
+- the phone link, when you enable it
+
+The phone link is the only one that holds a standing connection, and it carries the messages between you and her through the ntfy server you configure. Turn it off in the Phone tab and she is fully offline again.

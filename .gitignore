@@ -14,7 +14,7 @@ models/
 *.wav
 .env
 data/*.db
-data/apps_cache.json
+data/*.json
 data/voices/
 data/voices/
 data/audio/

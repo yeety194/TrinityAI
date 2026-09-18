@@ -15,6 +15,25 @@ from trinity.memory import Memory
 
 MAX_TOOL_RESULT = 8000
 
+# Anyone who learns the inbound topic can send Trinity messages, so a phone
+# message cannot reach the tools that touch this PC unless the user opts in.
+REMOTE_SAFE_TOOLS = frozenset(
+    {
+        "web_search",
+        "read_url",
+        "wikipedia",
+        "weather",
+        "remember",
+        "recall",
+        "forget",
+        "list_memory",
+        "add_note",
+        "list_notes",
+        "now",
+        "send_text",
+    }
+)
+
 # Models sometimes pass the user's phrasing straight through as the location.
 SELF_LOCATION_RE = re.compile(
     r"^(?:here|home|my (?:area|city|town|place|location)|where i (?:live|am))\b", re.I
@@ -23,7 +42,23 @@ SELF_LOCATION_RE = re.compile(
 ToolFn = Callable[[dict[str, Any], Memory], str]
 
 
-def schemas() -> list[dict[str, Any]]:
+_channel: Any | None = None
+
+
+def set_message_channel(channel: Any | None) -> None:
+    """Register the single phone-link channel used by the send_text tool."""
+    global _channel
+    _channel = channel
+
+
+def schemas(allowed: frozenset[str] | None = None) -> list[dict[str, Any]]:
+    tools = _all_schemas()
+    if allowed is None:
+        return tools
+    return [tool for tool in tools if tool["function"]["name"] in allowed]
+
+
+def _all_schemas() -> list[dict[str, Any]]:
     return [
         _fn(
             "open_app",
@@ -148,10 +183,26 @@ def schemas() -> list[dict[str, Any]]:
             {},
             [],
         ),
+        _fn(
+            "send_text",
+            "Send a short message to the user's phone. Use when they ask to be texted or notified.",
+            {"message": _str("What to send, kept short")},
+            ["message"],
+        ),
     ]
 
 
-def dispatch(name: str, arguments: dict[str, Any], memory: Memory) -> str:
+def dispatch(
+    name: str,
+    arguments: dict[str, Any],
+    memory: Memory,
+    allowed: frozenset[str] | None = None,
+) -> str:
+    if allowed is not None and name not in allowed:
+        return (
+            f"The {name} tool only works at the PC, not over the phone link. "
+            "Offer to do it when the user is back."
+        )
     fn = HANDLERS.get(name)
     if not fn:
         return f"Unknown tool: {name}"
@@ -164,36 +215,50 @@ def dispatch(name: str, arguments: dict[str, Any], memory: Memory) -> str:
     return result
 
 
+def _arg(args: dict[str, Any], *names: str, default: str = "") -> str:
+    """Local models often rename parameters, so accept the common aliases."""
+    for name in names:
+        if name not in args:
+            continue
+        value = args[name]
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if value is not None and not isinstance(value, (str, dict, list)):
+            return str(value)
+    return default
+
+
 def _open_app(args: dict[str, Any], _m: Memory) -> str:
-    return apps.open_app(str(args.get("name") or ""))
+    return apps.open_app(_arg(args, "name", "app", "application", "program", "value"))
 
 
 def _list_apps(args: dict[str, Any], _m: Memory) -> str:
-    return apps.list_apps(str(args.get("query") or ""))
+    return apps.list_apps(_arg(args, "query", "filter", "name", "search"))
 
 
 def _open_url(args: dict[str, Any], _m: Memory) -> str:
-    return apps.open_url(str(args.get("url") or ""))
+    return apps.open_url(_arg(args, "url", "link", "address", "site", "value"))
 
 
 def _open_folder(args: dict[str, Any], _m: Memory) -> str:
-    return apps.open_folder(str(args.get("path") or "home"))
+    return apps.open_folder(_arg(args, "path", "folder", "directory", "value", default="home"))
 
 
 def _web_search(args: dict[str, Any], _m: Memory) -> str:
-    return research.web_search(str(args.get("query") or ""), str(args.get("mode") or "web"))
+    query = _arg(args, "query", "q", "search", "text", "topic", "value")
+    return research.web_search(query, _arg(args, "mode", "type", default="web"))
 
 
 def _read_url(args: dict[str, Any], _m: Memory) -> str:
-    return research.read_url(str(args.get("url") or ""))
+    return research.read_url(_arg(args, "url", "link", "address", "value"))
 
 
 def _wikipedia(args: dict[str, Any], _m: Memory) -> str:
-    return research.wikipedia(str(args.get("topic") or ""))
+    return research.wikipedia(_arg(args, "topic", "query", "title", "q", "subject", "value"))
 
 
 def _weather(args: dict[str, Any], memory: Memory) -> str:
-    location = str(args.get("location") or "").strip()
+    location = _arg(args, "location", "city", "place", "where", "query", "value")
     home = (memory.get_fact("home location") or "").strip()
     if not location or SELF_LOCATION_RE.match(location):
         location = home
@@ -203,15 +268,18 @@ def _weather(args: dict[str, Any], memory: Memory) -> str:
 
 
 def _remember(args: dict[str, Any], memory: Memory) -> str:
-    return memory.remember(str(args.get("key") or ""), str(args.get("value") or ""))
+    return memory.remember(
+        _arg(args, "key", "label", "name", "fact"),
+        _arg(args, "value", "content", "detail", "text"),
+    )
 
 
 def _recall(args: dict[str, Any], memory: Memory) -> str:
-    return memory.recall(str(args.get("query") or ""))
+    return memory.recall(_arg(args, "query", "key", "q", "search", "topic", "value"))
 
 
 def _forget(args: dict[str, Any], memory: Memory) -> str:
-    return memory.forget(str(args.get("key") or ""))
+    return memory.forget(_arg(args, "key", "label", "name", "value"))
 
 
 def _list_memory(_args: dict[str, Any], memory: Memory) -> str:
@@ -222,7 +290,7 @@ def _list_memory(_args: dict[str, Any], memory: Memory) -> str:
 
 
 def _add_note(args: dict[str, Any], memory: Memory) -> str:
-    return memory.add_note(str(args.get("text") or ""))
+    return memory.add_note(_arg(args, "text", "note", "body", "content", "value"))
 
 
 def _list_notes(_args: dict[str, Any], memory: Memory) -> str:
@@ -239,16 +307,15 @@ def _clipboard_get(_args: dict[str, Any], _m: Memory) -> str:
 
 
 def _clipboard_set(args: dict[str, Any], _m: Memory) -> str:
-    text = str(args.get("text") or "")
-    pyperclip.copy(text)
+    pyperclip.copy(_arg(args, "text", "content", "value"))
     return "Copied to clipboard."
 
 
 def _search_files(args: dict[str, Any], _m: Memory) -> str:
-    query = str(args.get("query") or "").strip().lower()
+    query = _arg(args, "query", "name", "filename", "q", "value").lower()
     if not query:
         return "Need a filename query."
-    root = _allowed_root(str(args.get("where") or "home"))
+    root = _allowed_root(_arg(args, "where", "path", "folder", "location", default="home"))
     if root is None:
         return "That location is outside the user profile."
     hits: list[str] = []
@@ -265,6 +332,18 @@ def _search_files(args: dict[str, Any], _m: Memory) -> str:
                 if len(hits) >= 20:
                     return "\n".join(hits)
     return "\n".join(hits) if hits else "No matching files."
+
+
+def _send_text(args: dict[str, Any], _m: Memory) -> str:
+    message = _arg(args, "message", "text", "body", "content", "value")
+    if not message:
+        return "Nothing to send."
+    if _channel is None or not getattr(_channel, "configured", False):
+        return "Texting is off. Turn on the phone link in Trinity's Phone tab first."
+    try:
+        return _channel.publish(message)
+    except Exception as exc:
+        return f"Could not send that: {exc}"
 
 
 def _system_info(_args: dict[str, Any], _m: Memory) -> str:
@@ -338,6 +417,7 @@ HANDLERS: dict[str, ToolFn] = {
     "clipboard_set": _clipboard_set,
     "search_files": _search_files,
     "system_info": _system_info,
+    "send_text": _send_text,
 }
 
 

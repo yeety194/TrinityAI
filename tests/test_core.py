@@ -7,9 +7,12 @@ from pathlib import Path
 from trinity.agent import Agent, _force_from_hint, _parse_text_tools
 from trinity.apps import looks_like_url, pick_app
 from trinity.brain import Brain
+from trinity.config import build_system_prompt
 from trinity.memory import Memory
+from trinity.messaging import new_topic
 from trinity.research import describe_weather_code
 from trinity.router import routing_hint
+from trinity.skills import REMOTE_SAFE_TOOLS, _arg, dispatch, schemas
 
 
 class PickAppTests(unittest.TestCase):
@@ -89,6 +92,64 @@ class ConversationTests(unittest.TestCase):
             self.assertEqual(agent.conversation_state()["summary"], "Compact continuity note.")
 
 
+class PhoneLinkTests(unittest.TestCase):
+    def test_topics_are_unguessable_and_distinct(self) -> None:
+        first, second = new_topic("in"), new_topic("in")
+        self.assertNotEqual(first, second)
+        self.assertGreater(len(first), 24)
+
+    def test_remote_toolset_excludes_pc_control(self) -> None:
+        for blocked in ("open_app", "open_folder", "clipboard_get", "search_files"):
+            self.assertNotIn(blocked, REMOTE_SAFE_TOOLS)
+        for allowed in ("web_search", "remember", "send_text"):
+            self.assertIn(allowed, REMOTE_SAFE_TOOLS)
+
+    def test_blocked_tool_is_refused_with_an_explanation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = Memory(Path(tmp) / "t.db")
+            result = dispatch("open_app", {"name": "discord"}, memory, REMOTE_SAFE_TOOLS)
+        self.assertIn("only works at the PC", result)
+
+    def test_remote_schemas_are_filtered(self) -> None:
+        names = {tool["function"]["name"] for tool in schemas(REMOTE_SAFE_TOOLS)}
+        self.assertEqual(names, set(REMOTE_SAFE_TOOLS))
+        self.assertIn("open_app", {tool["function"]["name"] for tool in schemas()})
+
+    def test_desktop_only_request_gets_a_clear_answer_without_the_model(self) -> None:
+        class NeverCalledBrain:
+            def complete(self, messages, tools=None):
+                raise AssertionError("the model should not be consulted")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = Agent(
+                NeverCalledBrain(),
+                Memory(Path(tmp) / "t.db"),
+                allowed_tools=REMOTE_SAFE_TOOLS,
+                remote=True,
+            )
+            finals = [p for kind, p in agent.handle("Open Discord for me") if kind == "final"]
+        self.assertIn("only works at the PC", finals[0])
+        self.assertIn("research", finals[0])
+
+    def test_empty_reply_does_not_claim_success(self) -> None:
+        class SilentBrain:
+            def complete(self, messages, tools=None):
+                return {"content": ""}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = Agent(SilentBrain(), Memory(Path(tmp) / "t.db"))
+            finals = [p for kind, p in agent.handle("Open Discord") if kind == "final"]
+        self.assertTrue(finals)
+        self.assertNotEqual(finals[0], "Done.")
+        self.assertIn("don't have an answer", finals[0])
+
+    def test_remote_prompt_states_the_desktop_limits(self) -> None:
+        prompt = build_system_prompt("(empty)", "", remote=True)
+        self.assertIn("phone link", prompt)
+        self.assertIn("clipboard", prompt)
+        self.assertNotIn("phone link, not at the PC", build_system_prompt("(empty)"))
+
+
 class RouterTests(unittest.TestCase):
     def test_open_and_research(self) -> None:
         self.assertIn("open_app", routing_hint("launch Spotify") or "")
@@ -113,6 +174,14 @@ class RouterTests(unittest.TestCase):
         hint = routing_hint("What's the weather in Miami?", "Denver") or ""
         self.assertNotIn("location=Denver", hint)
         self.assertIsNone(_force_from_hint(hint))
+
+
+class ToolArgumentTests(unittest.TestCase):
+    def test_renamed_parameters_still_work(self) -> None:
+        self.assertEqual(_arg({"query": "Portugal"}, "topic", "query"), "Portugal")
+        self.assertEqual(_arg({"city": "Miami"}, "location", "city"), "Miami")
+        self.assertEqual(_arg({}, "path", default="home"), "home")
+        self.assertEqual(_arg({"name": "  Discord "}, "name"), "Discord")
 
 
 class WeatherFormattingTests(unittest.TestCase):

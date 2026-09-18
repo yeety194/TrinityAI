@@ -15,6 +15,14 @@
     "silence_seconds": 1.1,
     "max_record_seconds": 20
   },
+  "messaging": {
+    "enabled": true,
+    "server": "https://ntfy.sh",
+    "outbound_topic": "",
+    "inbound_topic": "",
+    "token": "",
+    "remote_can_control_pc": false
+  },
   "ui": {
     "always_on_top": false
   }

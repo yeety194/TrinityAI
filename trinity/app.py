@@ -10,6 +10,9 @@ from trinity.agent import Agent
 from trinity.brain import Brain
 from trinity.config import DEFAULTS, ensure_config, save_config
 from trinity.memory import Memory
+from trinity.messaging import MessagingError, NtfyChannel
+from trinity.remote import RemoteBridge
+from trinity.skills import REMOTE_SAFE_TOOLS, set_message_channel
 from trinity.voice import Voice
 
 ACCENT = "#54E1C4"
@@ -32,6 +35,7 @@ class TrinityApp(ctk.CTk):
         self.memory = Memory()
         self._startup_warning = ""
         self.agent = Agent(self._build_brain(), self.memory)
+        self._build_phone_link()
         self.voice = Voice()
         self.voice.set_handlers(self._on_heard, self._set_status)
         self._stream_lock = threading.Lock()
@@ -67,6 +71,21 @@ class TrinityApp(ctk.CTk):
             self._startup_warning = f"{exc} Using {fallback} instead."
             return Brain(fallback, *settings)
 
+    def _build_phone_link(self) -> None:
+        messaging = self.cfg["messaging"]
+        self.channel = NtfyChannel(
+            messaging["server"],
+            messaging["outbound_topic"],
+            messaging["inbound_topic"],
+            messaging.get("token", ""),
+        )
+        set_message_channel(self.channel)
+        allowed = None if messaging.get("remote_can_control_pc") else REMOTE_SAFE_TOOLS
+        self.remote_agent = Agent(
+            self._build_brain(), self.memory, allowed_tools=allowed, remote=True
+        )
+        self.bridge = RemoteBridge(self.channel, self.remote_agent, self._trace)
+
     def _build(self) -> None:
         self._build_header()
         self.tabs = ctk.CTkTabview(
@@ -82,8 +101,10 @@ class TrinityApp(ctk.CTk):
         self.tabs.pack(fill="both", expand=True, padx=20, pady=(0, 18))
         self.chat_tab = self.tabs.add("Chat")
         self.brain_tab = self.tabs.add("Brain")
+        self.phone_tab = self.tabs.add("Phone")
         self._build_chat_tab()
         self._build_brain_tab()
+        self._build_phone_tab()
         self.bind("<Control-space>", lambda _event: self._push_to_talk())
 
     def _build_header(self) -> None:
@@ -275,6 +296,173 @@ class TrinityApp(ctk.CTk):
         brain_composer = ctk.CTkFrame(self.brain_tab, fg_color=PANEL, corner_radius=16)
         brain_composer.pack(fill="x", padx=2, pady=(0, 2))
         self._build_composer(brain_composer, "brain")
+
+    def _build_phone_tab(self) -> None:
+        messaging = self.cfg["messaging"]
+
+        intro = ctk.CTkFrame(self.phone_tab, fg_color=PANEL, corner_radius=16)
+        intro.pack(fill="x", padx=2, pady=(12, 10))
+        ctk.CTkLabel(
+            intro,
+            text="Phone link",
+            font=ctk.CTkFont(size=17, weight="bold"),
+            text_color=TEXT,
+        ).pack(anchor="w", padx=18, pady=(14, 0))
+        ctk.CTkLabel(
+            intro,
+            text=(
+                "Install the ntfy app on your phone, subscribe to the two topics below, and "
+                "Trinity can message you. Send to the inbound topic and she answers. "
+                "This works while this PC is awake and Trinity is running."
+            ),
+            font=ctk.CTkFont(size=12),
+            text_color=MUTED,
+            justify="left",
+            wraplength=940,
+        ).pack(anchor="w", padx=18, pady=(2, 14))
+
+        self.phone_switch = ctk.CTkSwitch(
+            intro,
+            text="Enable phone link",
+            command=self._toggle_phone_link,
+            progress_color=ACCENT,
+            button_color=ACCENT,
+            text_color=TEXT,
+        )
+        self.phone_switch.pack(anchor="w", padx=18, pady=(0, 16))
+
+        topics = ctk.CTkFrame(self.phone_tab, fg_color=PANEL, corner_radius=16)
+        topics.pack(fill="x", padx=2, pady=(0, 10))
+        ctk.CTkLabel(
+            topics,
+            text="YOUR PRIVATE TOPICS",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=ACCENT,
+        ).pack(anchor="w", padx=16, pady=(12, 2))
+        ctk.CTkLabel(
+            topics,
+            text=f"Server  {messaging['server']}",
+            font=ctk.CTkFont(size=12),
+            text_color=MUTED,
+        ).pack(anchor="w", padx=16, pady=(0, 6))
+        self._topic_row(topics, "She messages you on", messaging["outbound_topic"])
+        self._topic_row(topics, "You message her on", messaging["inbound_topic"])
+
+        actions = ctk.CTkFrame(topics, fg_color="transparent")
+        actions.pack(anchor="w", fill="x", padx=16, pady=(4, 14))
+        ctk.CTkButton(
+            actions,
+            text="Send test message",
+            width=150,
+            height=32,
+            fg_color=ACCENT,
+            text_color=BG,
+            hover_color="#80F0DE",
+            command=self._send_test_message,
+        ).pack(side="left")
+        ctk.CTkButton(
+            actions,
+            text="Copy both topics",
+            width=140,
+            height=32,
+            fg_color=PANEL_RAISED,
+            hover_color="#213143",
+            command=self._copy_topics,
+        ).pack(side="left", padx=8)
+
+        caution = ctk.CTkFrame(self.phone_tab, fg_color=PANEL, corner_radius=16)
+        caution.pack(fill="x", padx=2, pady=(0, 10))
+        ctk.CTkLabel(
+            caution,
+            text="WHO CAN REACH HER",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=ACCENT,
+        ).pack(anchor="w", padx=16, pady=(12, 2))
+        ctk.CTkLabel(
+            caution,
+            text=(
+                "On the public ntfy.sh server the topic name is the only secret, so treat it like "
+                "a password. Phone messages are limited to research, memory, notes, and texting; "
+                "they cannot open apps, read your clipboard, or search your files."
+            ),
+            font=ctk.CTkFont(size=12),
+            text_color=MUTED,
+            justify="left",
+            wraplength=940,
+        ).pack(anchor="w", padx=16, pady=(0, 10))
+        self.remote_power_switch = ctk.CTkSwitch(
+            caution,
+            text="Also let phone messages control this PC (not recommended)",
+            command=self._toggle_remote_power,
+            progress_color="#C9705F",
+            button_color="#C9705F",
+            text_color=TEXT,
+        )
+        self.remote_power_switch.pack(anchor="w", padx=16, pady=(0, 14))
+        if messaging.get("remote_can_control_pc"):
+            self.remote_power_switch.select()
+        if messaging.get("enabled"):
+            self.phone_switch.select()
+            self.after(900, self._start_phone_link)
+
+    def _topic_row(self, parent: ctk.CTkFrame, label: str, topic: str) -> None:
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=3)
+        ctk.CTkLabel(
+            row, text=label, width=170, anchor="w", text_color=MUTED, font=ctk.CTkFont(size=12)
+        ).pack(side="left")
+        value = ctk.CTkEntry(
+            row, height=32, fg_color=BG, border_color="#263748", text_color=TEXT
+        )
+        value.pack(side="left", fill="x", expand=True)
+        value.insert(0, topic)
+        value.configure(state="readonly")
+
+    def _toggle_phone_link(self) -> None:
+        enabled = bool(self.phone_switch.get())
+        self.cfg["messaging"]["enabled"] = enabled
+        save_config(self.cfg)
+        if enabled:
+            self._start_phone_link()
+        else:
+            self.bridge.stop()
+            self._trace("Phone link turned off")
+
+    def _start_phone_link(self) -> None:
+        self.bridge.start()
+        self._trace("Phone link starting")
+
+    def _toggle_remote_power(self) -> None:
+        full = bool(self.remote_power_switch.get())
+        self.cfg["messaging"]["remote_can_control_pc"] = full
+        save_config(self.cfg)
+        self.remote_agent.allowed_tools = None if full else REMOTE_SAFE_TOOLS
+        self._trace(
+            "Phone messages may now control this PC"
+            if full
+            else "Phone messages restricted to research and memory"
+        )
+
+    def _send_test_message(self) -> None:
+        def work() -> None:
+            try:
+                self.channel.publish("Trinity here. The phone link works.")
+                self._trace("Test message sent to your phone")
+            except MessagingError as exc:
+                self._trace(str(exc))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _copy_topics(self) -> None:
+        messaging = self.cfg["messaging"]
+        summary = (
+            f"server: {messaging['server']}\n"
+            f"from Trinity: {messaging['outbound_topic']}\n"
+            f"to Trinity: {messaging['inbound_topic']}"
+        )
+        self.clipboard_clear()
+        self.clipboard_append(summary)
+        self._trace("Copied the phone-link topics to the clipboard")
 
     def _build_voice_controls(self, parent: ctk.CTkFrame) -> None:
         controls = ctk.CTkFrame(parent, fg_color="transparent")
@@ -558,6 +746,7 @@ class TrinityApp(ctk.CTk):
             pass
 
     def _on_close(self) -> None:
+        self.bridge.stop()
         self.voice.stop_listening()
         self.voice.interrupt_speech()
         self.destroy()

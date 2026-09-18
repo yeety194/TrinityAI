@@ -127,6 +127,10 @@ class NtfyChannel:
     def stop(self) -> None:
         self._stop.set()
 
+    def mark_handled(self, message_ids: set[str]) -> None:
+        """Skip messages another Trinity already answered."""
+        self._handled_ids.update(message_ids)
+
     def _headers(self) -> dict[str, str]:
         headers = {"User-Agent": "TrinityAI/0.4 (local desktop assistant)"}
         if self.token:

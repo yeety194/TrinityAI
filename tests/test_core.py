@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from trinity.agent import Agent, _force_from_hint, _parse_text_tools
 from trinity.apps import looks_like_url, pick_app
 from trinity.brain import Brain
+from trinity.cloud import from_openai_message, to_openai_messages
 from trinity.config import build_system_prompt
 from trinity.memory import Memory
 from trinity.messaging import new_topic
 from trinity.research import describe_weather_code
 from trinity.router import routing_hint
 from trinity.skills import REMOTE_SAFE_TOOLS, _arg, dispatch, schemas
+from trinity.sync import Presence
 
 
 class PickAppTests(unittest.TestCase):
@@ -148,6 +151,86 @@ class PhoneLinkTests(unittest.TestCase):
         self.assertIn("phone link", prompt)
         self.assertIn("clipboard", prompt)
         self.assertNotIn("phone link, not at the PC", build_system_prompt("(empty)"))
+
+
+class MemorySyncTests(unittest.TestCase):
+    def test_newest_edit_wins_in_both_directions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            desktop = Memory(Path(tmp) / "a.db")
+            cloud = Memory(Path(tmp) / "b.db")
+            desktop.remember("user name", "Casey")
+            cloud.remember("favorite editor", "Cursor")
+            cloud.merge_state(desktop.export_state())
+            desktop.merge_state(cloud.export_state())
+            self.assertEqual(desktop.get_fact("favorite editor"), "Cursor")
+            self.assertEqual(cloud.get_fact("user name"), "Casey")
+
+    def test_deleted_fact_is_not_resurrected_by_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            desktop = Memory(Path(tmp) / "a.db")
+            cloud = Memory(Path(tmp) / "b.db")
+            desktop.remember("home location", "Denver")
+            cloud.merge_state(desktop.export_state())
+            self.assertEqual(cloud.get_fact("home location"), "Denver")
+            desktop.forget("home location")
+            cloud.merge_state(desktop.export_state())
+            self.assertIsNone(cloud.get_fact("home location"))
+            desktop.merge_state(cloud.export_state())
+            self.assertIsNone(desktop.get_fact("home location"))
+
+    def test_notes_merge_without_duplicating(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            desktop = Memory(Path(tmp) / "a.db")
+            cloud = Memory(Path(tmp) / "b.db")
+            desktop.add_note("buy coffee")
+            cloud.merge_state(desktop.export_state())
+            cloud.merge_state(desktop.export_state())
+            self.assertEqual(cloud.export_state()["notes"].__len__(), 1)
+
+
+class PresenceTests(unittest.TestCase):
+    def test_twin_defers_while_the_desktop_is_awake(self) -> None:
+        presence = Presence(grace_seconds=60)
+        self.assertFalse(presence.desktop_awake)
+        presence.record()
+        self.assertTrue(presence.desktop_awake)
+        presence.record(at=time.time() - 120)
+        self.assertFalse(presence.desktop_awake)
+
+
+class CloudFormatTests(unittest.TestCase):
+    def test_tool_calls_and_results_are_paired_for_openai(self) -> None:
+        history = [
+            {"role": "system", "content": "rules"},
+            {"role": "user", "content": "weather in Denver"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"function": {"name": "weather", "arguments": {"location": "Denver"}}}
+                ],
+            },
+            {"role": "tool", "tool_name": "weather", "content": "clear, 70F"},
+        ]
+        converted = to_openai_messages(history)
+        call_id = converted[2]["tool_calls"][0]["id"]
+        self.assertEqual(converted[2]["tool_calls"][0]["function"]["arguments"], '{"location": "Denver"}')
+        self.assertEqual(converted[3]["tool_call_id"], call_id)
+
+    def test_openai_reply_is_converted_back(self) -> None:
+        message = from_openai_message(
+            {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_abc",
+                        "function": {"name": "web_search", "arguments": '{"query": "spacex"}'},
+                    }
+                ],
+            }
+        )
+        self.assertEqual(message["tool_calls"][0]["function"]["arguments"], {"query": "spacex"})
+        self.assertEqual(message["content"], "")
 
 
 class RouterTests(unittest.TestCase):

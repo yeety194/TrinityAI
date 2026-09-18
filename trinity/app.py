@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import tkinter as tk
 from datetime import datetime
 
@@ -13,6 +14,7 @@ from trinity.memory import Memory
 from trinity.messaging import MessagingError, NtfyChannel
 from trinity.remote import RemoteBridge
 from trinity.skills import REMOTE_SAFE_TOOLS, set_message_channel
+from trinity.sync import SyncClient, SyncError
 from trinity.voice import Voice
 
 ACCENT = "#54E1C4"
@@ -85,6 +87,12 @@ class TrinityApp(ctk.CTk):
             self._build_brain(), self.memory, allowed_tools=allowed, remote=True
         )
         self.bridge = RemoteBridge(self.channel, self.remote_agent, self._trace)
+        twin = self.cfg.get("cloud_twin") or {}
+        self.twin = (
+            SyncClient(twin.get("base_url", ""), twin.get("token", ""))
+            if twin.get("enabled") and twin.get("base_url")
+            else None
+        )
 
     def _build(self) -> None:
         self._build_header()
@@ -431,6 +439,32 @@ class TrinityApp(ctk.CTk):
     def _start_phone_link(self) -> None:
         self.bridge.start()
         self._trace("Phone link starting")
+        if self.twin:
+            threading.Thread(target=self._twin_loop, daemon=True).start()
+
+    def _twin_loop(self) -> None:
+        """Keep the cloud twin in step: claim presence, share memory, avoid double replies."""
+        twin = self.twin
+        if twin is None:
+            return
+        interval = max(1, int((self.cfg.get("cloud_twin") or {}).get("sync_minutes", 10))) * 60
+        try:
+            # Anything the twin already answered must not be answered again here.
+            self.channel.mark_handled(twin.handled_ids())
+        except SyncError as exc:
+            self._trace(str(exc))
+        since_sync = interval
+        while True:
+            try:
+                twin.heartbeat()
+                if since_sync >= interval:
+                    self._trace(twin.sync_memory(self.memory))
+                    self.after(0, self._refresh_memory)
+                    since_sync = 0
+            except SyncError as exc:
+                self._trace(str(exc))
+            time.sleep(30)
+            since_sync += 30
 
     def _toggle_remote_power(self) -> None:
         full = bool(self.remote_power_switch.get())

@@ -23,6 +23,11 @@
     "token": "",
     "remote_can_control_pc": false
   },
+  "cloud_twin": {
+    "enabled": false,
+    "base_url": "",
+    "sync_minutes": 10
+  },
   "ui": {
     "always_on_top": false
   }

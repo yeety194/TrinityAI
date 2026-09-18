@@ -12,10 +12,20 @@ Event = Callable[[str], None]
 class RemoteBridge:
     """Answers phone messages in their own session and texts the reply back."""
 
-    def __init__(self, channel: NtfyChannel, agent: Agent, on_event: Event) -> None:
+    def __init__(
+        self,
+        channel: NtfyChannel,
+        agent: Agent,
+        on_event: Event,
+        should_answer: Callable[[], bool] | None = None,
+        on_answered: Callable[[str], None] | None = None,
+    ) -> None:
         self.channel = channel
         self.agent = agent
         self.on_event = on_event
+        # The hosted twin stays quiet while the desktop is awake.
+        self.should_answer = should_answer
+        self.on_answered = on_answered
         self._thread: threading.Thread | None = None
         self._turn_lock = threading.Lock()
 
@@ -41,6 +51,9 @@ class RemoteBridge:
     def _handle(self, text: str) -> None:
         # One phone message at a time, so replies cannot interleave.
         with self._turn_lock:
+            if self.should_answer and not self.should_answer():
+                self.on_event("Skipped a phone message; the other Trinity is awake")
+                return
             self.on_event(f"Phone message: {text}")
             reply = ""
             try:
@@ -56,5 +69,7 @@ class RemoteBridge:
             try:
                 self.channel.publish(reply or "I had no answer for that.")
                 self.on_event("Replied to your phone")
+                if self.on_answered:
+                    self.on_answered(text)
             except MessagingError as exc:
                 self.on_event(str(exc))

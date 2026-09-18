@@ -35,6 +35,11 @@ DEFAULTS: dict[str, Any] = {
         "token": "",
         "remote_can_control_pc": False,
     },
+    "cloud_twin": {
+        "enabled": False,
+        "base_url": "",
+        "sync_minutes": 10,
+    },
     "ui": {
         "always_on_top": False,
     },
@@ -131,6 +136,9 @@ def _ensure_topics(cfg: dict[str, Any]) -> None:
     token = str(local.get("token") or "").strip()
     if token:
         messaging["token"] = token
+    twin_token = str(local.get("cloud_twin_token") or "").strip()
+    if twin_token:
+        cfg.setdefault("cloud_twin", {})["token"] = twin_token
     if changed:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         PHONE_LINK_PATH.write_text(json.dumps(local, indent=2) + "\n", encoding="utf-8")

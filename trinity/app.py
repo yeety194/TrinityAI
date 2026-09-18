@@ -25,7 +25,7 @@ from trinity.hud import (
 )
 from trinity.memory import Memory
 from trinity.reasoning import describe_delay
-from trinity.speech import SpeechError
+from trinity.speech import SpeechError, describe_key, key_problem, normalize_api_key
 from trinity.voice import ELEVENLABS_KEY, Voice
 
 PANEL = "#080E16"
@@ -283,9 +283,10 @@ class TrinityApp(ctk.CTk):
         ctk.CTkLabel(
             intro,
             text=(
-                "ElevenLabs gives her a natural voice and needs an API key; her replies are sent "
-                "to their service to be spoken. Piper runs entirely on this PC with no account. "
-                "She falls back to Piper whenever ElevenLabs is unavailable."
+                "ElevenLabs gives her a natural voice and needs an API key from "
+                "elevenlabs.io → Developers → API Keys (it usually starts with sk_). "
+                "A Voice ID will not work. Her replies are sent to their service to be spoken. "
+                "Piper runs entirely on this PC. She falls back to it if ElevenLabs fails."
             ),
             font=ctk.CTkFont(size=12),
             text_color=MUTED,
@@ -322,9 +323,20 @@ class TrinityApp(ctk.CTk):
             border_color=PANEL_EDGE,
             text_color=TEXT,
         )
-        self.key_entry.pack(side="left", fill="x", expand=True)
+        self.key_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         if self.voice.cloud.api_key:
             self.key_entry.insert(0, self.voice.cloud.api_key)
+        ctk.CTkButton(
+            key_row,
+            text="PASTE",
+            width=80,
+            height=34,
+            fg_color=RAISED,
+            hover_color="#1B3245",
+            text_color=TEXT,
+            font=ctk.CTkFont(family=MONO, size=11),
+            command=self._paste_api_key,
+        ).pack(side="left")
         ctk.CTkButton(
             key_row,
             text="SAVE",
@@ -620,34 +632,93 @@ class TrinityApp(ctk.CTk):
         self._refresh_voice_status()
         self._trace(f"Local voice set to {display_name}")
 
+    def _typed_api_key(self) -> str:
+        return normalize_api_key(self.key_entry.get())
+
+    def _paste_api_key(self) -> None:
+        try:
+            text = str(self.clipboard_get() or "")
+        except tk.TclError:
+            text = ""
+        if not text:
+            try:
+                import pyperclip
+
+                text = str(pyperclip.paste() or "")
+            except Exception:
+                text = ""
+        key = normalize_api_key(text)
+        if not key:
+            self._show_voice_status(
+                "Clipboard is empty. Copy the key from elevenlabs.io → Developers → API Keys first.",
+                error=True,
+            )
+            return
+        self.key_entry.delete(0, "end")
+        self.key_entry.insert(0, key)
+        self._save_api_key()
+
+    def _apply_typed_key(self) -> str:
+        key = self._typed_api_key()
+        if not key:
+            return self.voice.cloud.api_key
+        problem = key_problem(key)
+        if problem:
+            raise SpeechError(problem)
+        if key != self.voice.cloud.api_key:
+            save_secret(ELEVENLABS_KEY, key)
+            self.voice.set_api_key(key)
+        return key
+
     def _save_api_key(self) -> None:
-        key = self.key_entry.get().strip()
+        key = self._typed_api_key()
+        if not key:
+            if self.voice.cloud.api_key:
+                self._show_voice_status(
+                    f"Saved key left as-is ({describe_key(self.voice.cloud.api_key)}). "
+                    "Paste a new key to replace it."
+                )
+                return
+            self._show_voice_status("Paste an ElevenLabs API key first.", error=True)
+            return
+        problem = key_problem(key)
+        if problem:
+            self._show_voice_status(problem, error=True)
+            return
+        self.key_entry.delete(0, "end")
+        self.key_entry.insert(0, key)
         save_secret(ELEVENLABS_KEY, key)
         self.voice.set_api_key(key)
-        if not key:
-            self._trace("Cleared the ElevenLabs key; using the local voice")
-            self._refresh_voice_status()
-            return
+        self._show_voice_status(f"Checking {describe_key(key)}…")
 
         def work() -> None:
             try:
                 detail = self.voice.cloud.check()
+                self.cfg["voice"]["elevenlabs_api_root"] = self.voice.cloud.api_root
+                save_config(self.cfg)
+                self.after(0, lambda message=detail: self._show_voice_status(message))
             except SpeechError as exc:
                 detail = str(exc)
-            self._trace(detail)
-            self.after(0, self._refresh_voice_status)
+                self.after(0, lambda message=detail: self._show_voice_status(message, error=True))
 
         threading.Thread(target=work, daemon=True).start()
 
     def _load_cloud_voices(self) -> None:
+        try:
+            self._apply_typed_key()
+        except SpeechError as exc:
+            self._show_voice_status(str(exc), error=True)
+            return
+
         def work() -> None:
             try:
                 voices = self.voice.cloud.list_voices()
             except SpeechError as exc:
-                self._trace(str(exc))
+                detail = str(exc)
+                self.after(0, lambda message=detail: self._show_voice_status(message, error=True))
                 return
             if not voices:
-                self._trace("That account has no voices")
+                self.after(0, lambda: self._show_voice_status("That account has no voices.", error=True))
                 return
             self._cloud_voices = dict(voices)
             names = list(self._cloud_voices)
@@ -658,9 +729,9 @@ class TrinityApp(ctk.CTk):
             def apply() -> None:
                 self.cloud_voice_choice.configure(values=names)
                 self.cloud_voice_choice.set(current)
+                self._show_voice_status(f"Loaded {len(names)} ElevenLabs voices")
 
             self.after(0, apply)
-            self._trace(f"Loaded {len(names)} ElevenLabs voices")
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -677,11 +748,41 @@ class TrinityApp(ctk.CTk):
         self._trace(f"ElevenLabs voice set to {name}")
 
     def _preview_voice(self) -> None:
-        self.voice.speak("Trinity online. This is how I sound.")
+        try:
+            self._apply_typed_key()
+        except SpeechError as exc:
+            self._show_voice_status(str(exc), error=True)
+            return
+        if self.voice.engine == "elevenlabs" and not self.voice.cloud.api_key:
+            self._show_voice_status("Paste an ElevenLabs API key first.", error=True)
+            return
+
+        def work() -> None:
+            try:
+                if self.voice.engine == "elevenlabs":
+                    detail = self.voice.cloud.check()
+                    self.cfg["voice"]["elevenlabs_api_root"] = self.voice.cloud.api_root
+                    save_config(self.cfg)
+                    self.after(0, lambda message=detail: self._show_voice_status(message))
+            except SpeechError as exc:
+                detail = str(exc)
+                self.after(0, lambda message=detail: self._show_voice_status(message, error=True))
+                return
+            self.voice.speak("Trinity online. This is how I sound.")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_voice_status(self, text: str, error: bool = False) -> None:
+        self.voice_status.configure(text=text, text_color=ALERT if error else CYAN)
+        self.voice_card.configure(text=self.voice.describe_engine())
+        self._trace(text)
 
     def _refresh_voice_status(self) -> None:
         description = self.voice.describe_engine()
-        self.voice_status.configure(text=description)
+        self.voice_status.configure(
+            text=description,
+            text_color=ALERT if self.voice.cloud.last_error else CYAN,
+        )
         self.voice_card.configure(text=description)
 
     def _push_to_talk(self) -> None:

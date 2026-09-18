@@ -44,6 +44,7 @@ class Voice:
             str(cfg.get("elevenlabs_model", "eleven_turbo_v2_5")),
             float(cfg.get("elevenlabs_stability", 0.45)),
             float(cfg.get("elevenlabs_similarity", 0.8)),
+            str(cfg.get("elevenlabs_api_root", "")),
         )
         self._cloud_voice_name = str(cfg.get("elevenlabs_voice_name", "")) or "ElevenLabs voice"
         self._tts_lock = threading.Lock()
@@ -81,9 +82,15 @@ class Voice:
     def cloud_ready(self) -> bool:
         return self.engine == "elevenlabs" and self.cloud.configured
 
-    def set_api_key(self, key: str) -> None:
+    def set_api_key(self, key: str) -> str:
+        from trinity.speech import normalize_api_key
+
         self.interrupt_speech()
-        self.cloud.api_key = key.strip()
+        normalized = normalize_api_key(key)
+        self.cloud.api_key = normalized
+        self.cloud.verified = False
+        self.cloud.last_error = ""
+        return normalized
 
     def set_cloud_voice(self, name: str, voice_id: str) -> None:
         self.interrupt_speech()
@@ -95,9 +102,15 @@ class Voice:
         self.engine = engine.lower()
 
     def describe_engine(self) -> str:
+        from trinity.speech import describe_key
+
         if self.engine == "elevenlabs":
-            if self.cloud.configured:
+            if self.cloud.last_error:
+                return f"ElevenLabs · {self.cloud.last_error}"
+            if self.cloud.verified:
                 return f"ElevenLabs · {self._cloud_voice_name}"
+            if self.cloud.api_key:
+                return f"ElevenLabs · {describe_key(self.cloud.api_key)} (not verified yet)"
             return "ElevenLabs (no API key yet)"
         return f"Piper · {self.current_voice_name()}"
 
@@ -158,8 +171,10 @@ class Voice:
                     return
                 except SpeechError as exc:
                     # Falling back keeps her talking when the key or credits fail.
+                    self.cloud.last_error = str(exc)
                     self._status(f"{exc} Falling back to the local voice.")
                 except Exception as exc:
+                    self.cloud.last_error = str(exc)
                     self._status(f"Cloud voice failed ({exc}); using the local voice.")
             try:
                 self._status("Speaking locally")
@@ -172,8 +187,19 @@ class Voice:
     def _speak_cloud(self, text: str) -> None:
         from trinity.speech import STREAM_RATE
 
-        stream = sd.OutputStream(samplerate=STREAM_RATE, channels=1, dtype="float32")
-        stream.start()
+        try:
+            stream = sd.OutputStream(samplerate=STREAM_RATE, channels=1, dtype="float32")
+            stream.start()
+        except Exception:
+            blocks = []
+            for block in self.cloud.stream(text):
+                if self._stop_speak.is_set():
+                    return
+                blocks.append(block)
+            if blocks:
+                sd.play(np.concatenate(blocks), STREAM_RATE)
+                sd.wait()
+            return
         try:
             for block in self.cloud.stream(text):
                 if self._stop_speak.is_set():

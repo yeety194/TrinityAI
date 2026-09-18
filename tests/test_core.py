@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from trinity.agent import (
     Agent,
@@ -256,6 +258,124 @@ class ToolParsingTests(unittest.TestCase):
     def test_forced_hint_must_name_a_real_tool(self) -> None:
         self.assertEqual(_force_from_hint("Call open_app with name=discord"), ("open_app", {"name": "discord"}))
         self.assertIsNone(_force_from_hint("Call make_coffee with strength=strong"))
+
+
+class SpeechKeyTests(unittest.TestCase):
+    def test_normalize_strips_headers_quotes_and_finds_sk_key(self) -> None:
+        from trinity.speech import normalize_api_key
+
+        self.assertEqual(normalize_api_key('  "sk_abc123DEF"  '), "sk_abc123DEF")
+        self.assertEqual(normalize_api_key("xi-api-key: sk_abc123DEF"), "sk_abc123DEF")
+        self.assertEqual(normalize_api_key("Bearer sk_abc123DEF"), "sk_abc123DEF")
+        self.assertEqual(
+            normalize_api_key(
+                "curl https://api.elevenlabs.io/v1/user -H 'xi-api-key: sk_abc123DEF'"
+            ),
+            "sk_abc123DEF",
+        )
+
+    def test_voice_id_is_rejected_as_a_key(self) -> None:
+        from trinity.speech import key_problem
+
+        self.assertIn("Voice ID", key_problem("21m00Tcm4TlvDq8ikWAM") or "")
+        self.assertIsNone(key_problem("sk_" + ("a" * 48)))
+
+    def test_explain_keeps_residency_and_401_messages(self) -> None:
+        from trinity.speech import explain_response
+
+        class Fake:
+            def __init__(self, code: int, payload: dict | None, text: str = "") -> None:
+                self.status_code = code
+                self._payload = payload
+                self.text = text
+
+            def json(self) -> dict:
+                if self._payload is None:
+                    raise ValueError("no json")
+                return self._payload
+
+        residency = explain_response(
+            Fake(
+                401,
+                {
+                    "detail": {
+                        "status": "invalid_api_key",
+                        "message": "The API key used is for a data residency stack, however this server is a global server.",
+                    }
+                },
+            )
+        )
+        self.assertIn("residency", residency.lower())
+        rejected = explain_response(
+            Fake(401, {"detail": {"status": "invalid_api_key", "message": "Invalid API key"}})
+        )
+        self.assertIn("Invalid API key", rejected)
+        self.assertIn("Developers", explain_response(Fake(401, None, "")))
+
+    def test_check_uses_the_api_error_instead_of_could_not_reach(self) -> None:
+        from trinity.speech import ElevenLabsVoice, SpeechError
+
+        class Fake:
+            status_code = 401
+            text = ""
+
+            def json(self) -> dict:
+                return {"detail": {"status": "invalid_api_key", "message": "Invalid API key"}}
+
+            def raise_for_status(self) -> None:
+                raise AssertionError("HTTP errors should not be wrapped as connection failures")
+
+        voice = ElevenLabsVoice("sk_" + ("b" * 48), "21m00Tcm4TlvDq8ikWAM")
+        with patch("trinity.speech.requests.get", return_value=Fake()):
+            with self.assertRaises(SpeechError) as raised:
+                voice.check()
+        self.assertIn("Invalid API key", str(raised.exception))
+        self.assertNotIn("Could not reach", str(raised.exception))
+
+
+class SecretStorageTests(unittest.TestCase):
+    def test_saved_secret_wins_over_environment(self) -> None:
+        import trinity.config as cfg
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            secrets = root / "secrets.json"
+            secrets.write_text('{"elevenlabs_api_key": "sk_from_file"}', encoding="utf-8")
+            old_secrets, old_config, old_data = cfg.SECRETS_PATH, cfg.CONFIG_PATH, cfg.DATA_DIR
+            cfg.SECRETS_PATH = secrets
+            cfg.CONFIG_PATH = root / "config.json"
+            cfg.DATA_DIR = root
+            try:
+                with patch.dict(os.environ, {"ELEVENLABS_API_KEY": "sk_from_env"}):
+                    self.assertEqual(
+                        cfg.load_secret("elevenlabs_api_key", "ELEVENLABS_API_KEY"),
+                        "sk_from_file",
+                    )
+            finally:
+                cfg.SECRETS_PATH = old_secrets
+                cfg.CONFIG_PATH = old_config
+                cfg.DATA_DIR = old_data
+
+    def test_save_config_moves_a_key_out_of_config_json(self) -> None:
+        import trinity.config as cfg
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_secrets, old_config, old_data = cfg.SECRETS_PATH, cfg.CONFIG_PATH, cfg.DATA_DIR
+            cfg.DATA_DIR = root
+            cfg.SECRETS_PATH = root / "secrets.json"
+            cfg.CONFIG_PATH = root / "config.json"
+            try:
+                cfg.save_config(
+                    {"voice": {"engine": "elevenlabs", "elevenlabs_api_key": "sk_should_move"}}
+                )
+                saved = cfg.CONFIG_PATH.read_text(encoding="utf-8")
+                self.assertNotIn("sk_should_move", saved)
+                self.assertEqual(cfg.load_secret("elevenlabs_api_key"), "sk_should_move")
+            finally:
+                cfg.SECRETS_PATH = old_secrets
+                cfg.CONFIG_PATH = old_config
+                cfg.DATA_DIR = old_data
 
 
 if __name__ == "__main__":

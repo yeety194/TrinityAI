@@ -6,6 +6,12 @@
     "context_window": 16384
   },
   "voice": {
+    "engine": "elevenlabs",
+    "elevenlabs_voice_id": "21m00Tcm4TlvDq8ikWAM",
+    "elevenlabs_voice_name": "Rachel",
+    "elevenlabs_model": "eleven_turbo_v2_5",
+    "elevenlabs_stability": 0.45,
+    "elevenlabs_similarity": 0.8,
     "piper_voice": "en_US-amy-medium",
     "piper_length_scale": 0.95,
     "wake_word": "trinity",
@@ -14,19 +20,6 @@
     "sample_rate": 16000,
     "silence_seconds": 1.1,
     "max_record_seconds": 20
-  },
-  "messaging": {
-    "enabled": true,
-    "server": "https://ntfy.sh",
-    "outbound_topic": "",
-    "inbound_topic": "",
-    "token": "",
-    "remote_can_control_pc": false
-  },
-  "cloud_twin": {
-    "enabled": false,
-    "base_url": "",
-    "sync_minutes": 10
   },
   "ui": {
     "always_on_top": false

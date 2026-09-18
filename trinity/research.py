@@ -76,6 +76,49 @@ def _duck_html_fallback(query: str) -> str:
     return "\n".join(cleaned) if cleaned else f"No web results for {query}."
 
 
+def deep_research(topic: str, depth: int = 3) -> str:
+    """Search, then actually read the top sources and hand back notes with links."""
+    topic = topic.strip()
+    if not topic:
+        return "No research topic given."
+    depth = max(1, min(int(depth or 3), 4))
+    results = web_search(topic)
+    if results.startswith(("Web search failed", "No web results", "No results")):
+        return results
+    urls = _extract_urls(results)[:depth]
+    if not urls:
+        return f"Search notes for {topic}:\n{results}"
+
+    sections = [f"Research notes on {topic}", "", "Search summary:", results, ""]
+    for index, url in enumerate(urls, 1):
+        page = read_url(url)
+        body = page.split("\n", 1)[1] if "\n" in page else page
+        sections.append(f"Source {index}: {url}")
+        sections.append(_condense(body, 1400))
+        sections.append("")
+    sections.append(
+        "Synthesize these sources into an answer, note where they disagree, and cite the "
+        "source numbers you relied on."
+    )
+    return "\n".join(sections)
+
+
+def _extract_urls(text: str) -> list[str]:
+    found: list[str] = []
+    for match in re.finditer(r"https?://[^\s)\]}>\"']+", text):
+        url = match.group(0).rstrip(".,")
+        if url not in found and "duckduckgo.com" not in url:
+            found.append(url)
+    return found
+
+
+def _condense(text: str, limit: int) -> str:
+    clean = re.sub(r"\n{2,}", "\n", text).strip()
+    if len(clean) <= limit:
+        return clean
+    return clean[: limit - 1] + "…"
+
+
 def read_url(url: str) -> str:
     url = url.strip()
     if not url:

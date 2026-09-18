@@ -1,23 +1,28 @@
 # Trinity
 
-Local desktop assistant: chat, voice, long-term memory, app launching, and live web research. Its brain is local Hermes through [Ollama](https://ollama.com).
+A local desktop assistant with a JARVIS-style interface: a live arc-reactor HUD, voice in and out, long-term memory, and a tool-using agent that plans before it acts. Her brain is Hermes 3 running on your own machine through [Ollama](https://ollama.com).
 
-## Capabilities
+## The interface
 
-- **Talk** — type, Mic, or Ctrl+Space. Optional wake word “Trinity”
-- **Two workspaces** — Chat for a clean conversation; Brain for live activity, local memory, and a context snapshot. Both share the same conversation.
-- **Conversation continuity** — recent turns remain active; older turns are compacted into local session notes so Trinity can stay on topic.
-- **Local voice** — Piper neural speech uses a voice model on your PC; choose Amy, Lessac, or Ryan from the app
-- **Open apps** — Start Menu / installed apps (Chrome, Discord, Spotify, Cursor, …)
-- **Open sites and folders** — URLs, Desktop, Documents, Downloads
-- **Remember** — durable facts in a local SQLite store (shown in the Memory panel)
-- **Research** — web search, Wikipedia, page reading, weather
-- **Utilities** — time, clipboard, filename search under your user profile, notes
-- **Phone link** — she can text your phone, and you can message her back and get answers
+A reactor core that reacts to what she is doing — idle, listening, thinking, speaking — alongside live machine telemetry and your queued reminders. Three workspaces:
 
-She uses tools for real actions. She should not claim she opened something unless the tool ran.
+- **COMMS** — the conversation
+- **CORE** — activity log, memory archive, and a context snapshot
+- **VOICE** — speech engine, API key, and voice selection
 
-The Brain workspace shows the observable workflow (requests, memory updates, tools, and results). It intentionally does not expose private model reasoning.
+## What she can do
+
+**Think.** Multi-part requests get a short plan before any tool runs. When a tool comes back empty she changes the arguments or switches tools instead of giving up, and a stalled reply gets one nudge rather than a shrug.
+
+**Act on this PC.** Open apps, sites, and folders. Search filenames, list directories, and read text files. Control playback and volume. Report live CPU, memory, disk, and battery. Read and write the clipboard.
+
+**Research.** A single search for quick facts, or `deep_research` to search, actually read the top sources, and hand back notes with links to cite.
+
+**Remember.** Durable facts in a local SQLite archive, shown in the CORE tab. She also captures unmistakable personal facts on her own — your name, where you live, favourites, stated preferences — so a forgetful local model still keeps them.
+
+**Calculate.** Arithmetic goes through a real evaluator, never the model's guesswork.
+
+**Remind.** "Remind me to stretch in 20 minutes" — reminders are scheduled, shown on the HUD, and spoken when due.
 
 ## Setup and run
 
@@ -29,71 +34,32 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1
 
 Needs Python 3.12, Ollama, and a model (default `hermes3:8b`). First mic use downloads Whisper `tiny.en`.
 
-Install a local voice once, then it runs offline:
+## Voice
+
+**ElevenLabs** gives her a natural voice. Open the **VOICE** tab, paste your API key, press **SAVE**, then **LOAD MY VOICES** and pick one. The key is stored in `data/secrets.json`, which git ignores; `ELEVENLABS_API_KEY` works too.
+
+**Piper** runs on this PC with no account and no network. Install a voice once:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\setup_local_voice.ps1 -Voice Amy
 ```
 
-Use `Lessac` or `Ryan` in place of `Amy` to add those local choices. The voice model download is a one-time setup step; Trinity never uses a cloud voice service.
+She falls back to Piper automatically whenever ElevenLabs is unreachable, unauthorized, or out of credits, so she never goes silent.
+
+## Talking to her
+
+- Type in the composer and press Enter
+- **MIC** or **Ctrl+Space**, then speak; she stops at a pause
+- Turn on the wake word and say "Trinity, …"
 
 ## Try
 
-- “Open Discord”
-- “Remember that my name is …”
-- “What’s the weather in Miami?”
-- “Research the latest SpaceX launch and summarize it”
-- “What do you remember about me?”
-
-## Phone link
-
-Two-way messaging over [ntfy](https://ntfy.sh) — free, no account needed.
-
-1. Install the **ntfy** app on your phone
-2. Open Trinity's **Phone** tab and turn on **Enable phone link**
-3. Subscribe your phone to both topics shown there
-4. Press **Send test message** to confirm it arrives
-
-She messages you on the outbound topic; anything you publish to the inbound topic she answers. Ask her to "text me when you're done" and she uses it on her own.
-
-This works while this PC is awake and Trinity is running. Messages you send while it is asleep are answered when she next starts, because she resumes from the last message she saw.
-
-Your topics are generated on first run and kept in `data/phone_link.json`, which git ignores — they never reach a commit.
-
-**Treat the topic names like passwords.** On the public `ntfy.sh` server the topic name is the only thing protecting them, which is why each install generates its own random pair. Phone messages are deliberately limited to research, weather, memory, notes, and texting — they cannot open apps, read your clipboard, or search your files. The Phone tab has a switch to lift that restriction; leaving it off means a leaked topic cannot drive your PC. Self-host ntfy with an access token for stronger protection.
-
-## Hosted twin (optional)
-
-A small service in `server/` answers your phone when this PC is off. It shares the same ntfy topics, so nothing changes on your phone — whichever Trinity is awake replies.
-
-It uses a cloud model, so **this is the one part that sends your words off your machine.** Any OpenAI-compatible endpoint works (OpenAI, OpenRouter, Groq, your own proxy); nothing is sent until you set a key.
-
-**Handoff.** The desktop heartbeats to the twin every 30 seconds. The twin answers only after 150 seconds of silence, and tells the desktop which messages it already handled so you never get two replies.
-
-**Memory.** Two-way sync, newest edit wins, and `forget` leaves a tombstone so deleted facts are not resurrected by the other side.
-
-Deploy anywhere that runs a container, with a volume mounted at `/data`:
-
-```bash
-docker build -t trinity-twin .
-docker run -d -p 8080:8080 -v trinity-data:/data \
-  -e TRINITY_SYNC_TOKEN=<a long random secret> \
-  -e TRINITY_CLOUD_API_KEY=<your api key> \
-  -e TRINITY_CLOUD_MODEL=gpt-4o-mini \
-  -e TRINITY_NTFY_OUT=<your outbound topic> \
-  -e TRINITY_NTFY_IN=<your inbound topic> \
-  trinity-twin
-```
-
-Check `GET /health` to confirm the brain is ready and whether it thinks your desktop is awake. Then point the desktop at it in `config.json`:
-
-```json
-"cloud_twin": { "enabled": true, "base_url": "https://your-host", "sync_minutes": 10 }
-```
-
-Put the matching `TRINITY_SYNC_TOKEN` in `data/phone_link.json` as `cloud_twin_token`, so the shared secret stays out of git.
-
-The twin runs the same restricted toolset as the phone link, minus anything desktop-only: research, weather, memory, notes, and texting.
+- "Open Discord"
+- "What's 18 percent of 2,450?"
+- "Research the latest SpaceX launch and summarize it with sources"
+- "Remind me to stretch in 20 minutes"
+- "How's this machine doing?"
+- "Remember that my name is …"
 
 ## Config
 
@@ -101,24 +67,17 @@ The twin runs the same restricted toolset as the phone link, minus anything desk
 
 | Key | Meaning |
 | --- | --- |
-| `llm.model` | Local Ollama model (`hermes3:8b` is tuned for tool use and multi-step tasks) |
-| `llm.base_url` | Usually `http://127.0.0.1:11434` |
-| `voice.wake_word` | Wake phrase when listening is armed |
-| `voice.speak_replies` | Spoken answers |
-| `voice.whisper_model` | `tiny.en` or `base.en` |
-| `voice.piper_voice` | Local Piper voice model currently selected |
+| `llm.model` | Local Ollama model (`hermes3:8b` handles tools well) |
+| `llm.base_url` | Must be loopback; she refuses a remote brain |
+| `voice.engine` | `elevenlabs` or `piper` |
+| `voice.elevenlabs_voice_id` | Voice used for cloud speech |
+| `voice.elevenlabs_model` | Defaults to `eleven_turbo_v2_5` |
+| `voice.piper_voice` | Local fallback voice |
 | `voice.piper_length_scale` | Speaking pace; below 1.0 is faster |
-| `messaging.enabled` | Whether the phone link listens on startup |
-| `messaging.server` | ntfy server, `https://ntfy.sh` or your own |
-| `messaging.token` | Access token for a self-hosted ntfy; put it in `data/phone_link.json` so it stays out of git |
-| `messaging.remote_can_control_pc` | Off by default; on lets phone messages use every tool |
-| `cloud_twin.enabled` | Whether to sync with and hand off to a hosted twin |
-| `cloud_twin.base_url` | Your twin's URL |
-| `cloud_twin.sync_minutes` | How often memory is exchanged |
+| `voice.wake_word` | Wake phrase when listening is armed |
+| `voice.whisper_model` | `tiny.en` or `base.en` |
 
-Memory lives in `data/trinity.db` (not sent anywhere). **New session** clears the chat, not long-term memory.
-
-Trinity also captures unmistakable personal facts on her own — your name, where you live, "my favorite X is Y", and stated preferences — so a forgetful local model still keeps them. Preferences accumulate under one `preferences` entry instead of overwriting each other.
+Memory lives in `data/trinity.db`. **NEW SESSION** clears the conversation, not the archive.
 
 ## Tests
 
@@ -126,17 +85,8 @@ Trinity also captures unmistakable personal facts on her own — your name, wher
 .\.venv\Scripts\python.exe -m unittest tests.test_core
 ```
 
-## Local-first privacy boundary
+## Where your words go
 
-The desktop Trinity thinks, remembers, listens, and speaks entirely on your PC. She has no telemetry and no auto-updates, and the desktop app never sends your words to an external AI service.
+Her reasoning, memory, and speech recognition run entirely on this PC, and she has no cloud-AI fallback, telemetry, or auto-updates.
 
-Four things reach the internet, all at your request:
-
-- research tools you ask her to use
-- browser links you ask her to open
-- the phone link, when you enable it
-- the hosted twin, if you deploy one
-
-The phone link holds a standing connection and carries messages between you and her through the ntfy server you configure. Turn it off in the Phone tab and the desktop app is fully offline again.
-
-The hosted twin is the real exception: it runs on a cloud model, so messages you send it and the memory you sync to it leave your machine. It is entirely optional, off unless you set `cloud_twin.enabled`, and does nothing without an API key.
+Three things reach the internet, all at your request: the research tools you ask her to use, links you ask her to open, and — if you choose ElevenLabs for speech — the text of her spoken replies, sent to ElevenLabs to be voiced. Switch the VOICE tab to Piper and she is fully offline again.

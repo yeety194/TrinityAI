@@ -11,7 +11,8 @@ from faster_whisper import WhisperModel
 from piper import PiperVoice
 from piper.config import SynthesisConfig
 
-from trinity.config import DATA_DIR, load_config
+from trinity.config import DATA_DIR, load_config, load_secret
+from trinity.speech import ElevenLabsVoice, SpeechError
 
 Listener = Callable[[str], None]
 VOICE_DIR = DATA_DIR / "voices"
@@ -20,6 +21,7 @@ VOICE_CATALOG = {
     "Lessac (English, US)": "en_US-lessac-medium",
     "Ryan (English, US)": "en_US-ryan-medium",
 }
+ELEVENLABS_KEY = "elevenlabs_api_key"
 
 
 class Voice:
@@ -35,6 +37,15 @@ class Voice:
         self._whisper_name = str(cfg["whisper_model"])
         self._whisper: WhisperModel | None = None
         self._piper: PiperVoice | None = None
+        self.engine = str(cfg.get("engine", "elevenlabs")).lower()
+        self.cloud = ElevenLabsVoice(
+            load_secret(ELEVENLABS_KEY, "ELEVENLABS_API_KEY"),
+            str(cfg.get("elevenlabs_voice_id", "")),
+            str(cfg.get("elevenlabs_model", "eleven_turbo_v2_5")),
+            float(cfg.get("elevenlabs_stability", 0.45)),
+            float(cfg.get("elevenlabs_similarity", 0.8)),
+        )
+        self._cloud_voice_name = str(cfg.get("elevenlabs_voice_name", "")) or "ElevenLabs voice"
         self._tts_lock = threading.Lock()
         self._stop_speak = threading.Event()
         self._listening = threading.Event()
@@ -66,6 +77,29 @@ class Voice:
             self.interrupt_speech()
             self._voice_key = key
             self._piper = None
+
+    def cloud_ready(self) -> bool:
+        return self.engine == "elevenlabs" and self.cloud.configured
+
+    def set_api_key(self, key: str) -> None:
+        self.interrupt_speech()
+        self.cloud.api_key = key.strip()
+
+    def set_cloud_voice(self, name: str, voice_id: str) -> None:
+        self.interrupt_speech()
+        self._cloud_voice_name = name
+        self.cloud.voice_id = voice_id
+
+    def set_engine(self, engine: str) -> None:
+        self.interrupt_speech()
+        self.engine = engine.lower()
+
+    def describe_engine(self) -> str:
+        if self.engine == "elevenlabs":
+            if self.cloud.configured:
+                return f"ElevenLabs · {self._cloud_voice_name}"
+            return "ElevenLabs (no API key yet)"
+        return f"Piper · {self.current_voice_name()}"
 
     def load_stt(self) -> None:
         if self._whisper is None:
@@ -116,22 +150,50 @@ class Voice:
         with self._tts_lock:
             if self._stop_speak.is_set():
                 return
+            if self.cloud_ready():
+                try:
+                    self._status(f"Speaking · {self._cloud_voice_name}")
+                    self._speak_cloud(text)
+                    self._settle()
+                    return
+                except SpeechError as exc:
+                    # Falling back keeps her talking when the key or credits fail.
+                    self._status(f"{exc} Falling back to the local voice.")
+                except Exception as exc:
+                    self._status(f"Cloud voice failed ({exc}); using the local voice.")
             try:
                 self._status("Speaking locally")
-                voice = self._load_piper_voice()
-                config = SynthesisConfig(length_scale=self._piper_length_scale)
-                for chunk in voice.synthesize(text, syn_config=config):
-                    if self._stop_speak.is_set():
-                        break
-                    sd.play(chunk.audio_float_array, chunk.sample_rate)
-                    sd.wait()
+                self._speak_piper(text)
             except Exception as exc:
                 self._status(f"Local voice unavailable: {exc}")
                 return
-            if self._listening.is_set():
-                self._status("Listening")
-            else:
-                self._status("Standby")
+            self._settle()
+
+    def _speak_cloud(self, text: str) -> None:
+        from trinity.speech import STREAM_RATE
+
+        stream = sd.OutputStream(samplerate=STREAM_RATE, channels=1, dtype="float32")
+        stream.start()
+        try:
+            for block in self.cloud.stream(text):
+                if self._stop_speak.is_set():
+                    break
+                stream.write(block)
+        finally:
+            stream.stop()
+            stream.close()
+
+    def _speak_piper(self, text: str) -> None:
+        voice = self._load_piper_voice()
+        config = SynthesisConfig(length_scale=self._piper_length_scale)
+        for chunk in voice.synthesize(text, syn_config=config):
+            if self._stop_speak.is_set():
+                break
+            sd.play(chunk.audio_float_array, chunk.sample_rate)
+            sd.wait()
+
+    def _settle(self) -> None:
+        self._status("Listening" if self._listening.is_set() else "Standby")
 
     def _load_piper_voice(self) -> PiperVoice:
         if self._piper is not None:

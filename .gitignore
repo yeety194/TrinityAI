@@ -16,5 +16,6 @@ models/
 data/*.db
 data/*.json
 data/voices/
+*.png
 data/voices/
 data/audio/

@@ -1,21 +1,24 @@
 from __future__ import annotations
 
 import tempfile
-import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from trinity.agent import Agent, _force_from_hint, _parse_text_tools
+from trinity.agent import (
+    Agent,
+    _force_from_hint,
+    _looks_failed,
+    _parse_text_tools,
+    needs_plan,
+)
 from trinity.apps import looks_like_url, pick_app
 from trinity.brain import Brain
-from trinity.cloud import from_openai_message, to_openai_messages
-from trinity.config import build_system_prompt
 from trinity.memory import Memory
-from trinity.messaging import new_topic
+from trinity.reasoning import CalculationError, calculate, parse_when
 from trinity.research import describe_weather_code
 from trinity.router import routing_hint
-from trinity.skills import REMOTE_SAFE_TOOLS, _arg, dispatch, schemas
-from trinity.sync import Presence
+from trinity.skills import _arg, dispatch, schemas
 
 
 class PickAppTests(unittest.TestCase):
@@ -95,45 +98,7 @@ class ConversationTests(unittest.TestCase):
             self.assertEqual(agent.conversation_state()["summary"], "Compact continuity note.")
 
 
-class PhoneLinkTests(unittest.TestCase):
-    def test_topics_are_unguessable_and_distinct(self) -> None:
-        first, second = new_topic("in"), new_topic("in")
-        self.assertNotEqual(first, second)
-        self.assertGreater(len(first), 24)
-
-    def test_remote_toolset_excludes_pc_control(self) -> None:
-        for blocked in ("open_app", "open_folder", "clipboard_get", "search_files"):
-            self.assertNotIn(blocked, REMOTE_SAFE_TOOLS)
-        for allowed in ("web_search", "remember", "send_text"):
-            self.assertIn(allowed, REMOTE_SAFE_TOOLS)
-
-    def test_blocked_tool_is_refused_with_an_explanation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            memory = Memory(Path(tmp) / "t.db")
-            result = dispatch("open_app", {"name": "discord"}, memory, REMOTE_SAFE_TOOLS)
-        self.assertIn("only works at the PC", result)
-
-    def test_remote_schemas_are_filtered(self) -> None:
-        names = {tool["function"]["name"] for tool in schemas(REMOTE_SAFE_TOOLS)}
-        self.assertEqual(names, set(REMOTE_SAFE_TOOLS))
-        self.assertIn("open_app", {tool["function"]["name"] for tool in schemas()})
-
-    def test_desktop_only_request_gets_a_clear_answer_without_the_model(self) -> None:
-        class NeverCalledBrain:
-            def complete(self, messages, tools=None):
-                raise AssertionError("the model should not be consulted")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            agent = Agent(
-                NeverCalledBrain(),
-                Memory(Path(tmp) / "t.db"),
-                allowed_tools=REMOTE_SAFE_TOOLS,
-                remote=True,
-            )
-            finals = [p for kind, p in agent.handle("Open Discord for me") if kind == "final"]
-        self.assertIn("only works at the PC", finals[0])
-        self.assertIn("research", finals[0])
-
+class ReasoningTests(unittest.TestCase):
     def test_empty_reply_does_not_claim_success(self) -> None:
         class SilentBrain:
             def complete(self, messages, tools=None):
@@ -146,91 +111,95 @@ class PhoneLinkTests(unittest.TestCase):
         self.assertNotEqual(finals[0], "Done.")
         self.assertIn("don't have an answer", finals[0])
 
-    def test_remote_prompt_states_the_desktop_limits(self) -> None:
-        prompt = build_system_prompt("(empty)", "", remote=True)
-        self.assertIn("phone link", prompt)
-        self.assertIn("clipboard", prompt)
-        self.assertNotIn("phone link, not at the PC", build_system_prompt("(empty)"))
+    def test_empty_reply_is_nudged_once_before_giving_up(self) -> None:
+        class StallingBrain:
+            def __init__(self) -> None:
+                self.calls = 0
 
+            def complete(self, messages, tools=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"content": ""}
+                return {"content": "Here is the real answer."}
 
-class MemorySyncTests(unittest.TestCase):
-    def test_newest_edit_wins_in_both_directions(self) -> None:
+        brain = StallingBrain()
         with tempfile.TemporaryDirectory() as tmp:
-            desktop = Memory(Path(tmp) / "a.db")
-            cloud = Memory(Path(tmp) / "b.db")
-            desktop.remember("user name", "Casey")
-            cloud.remember("favorite editor", "Cursor")
-            cloud.merge_state(desktop.export_state())
-            desktop.merge_state(cloud.export_state())
-            self.assertEqual(desktop.get_fact("favorite editor"), "Cursor")
-            self.assertEqual(cloud.get_fact("user name"), "Casey")
+            agent = Agent(brain, Memory(Path(tmp) / "t.db"))
+            finals = [p for kind, p in agent.handle("tell me something") if kind == "final"]
+        self.assertEqual(finals, ["Here is the real answer."])
+        self.assertEqual(brain.calls, 2)
 
-    def test_deleted_fact_is_not_resurrected_by_sync(self) -> None:
+    def test_plans_only_for_multi_step_requests(self) -> None:
+        self.assertTrue(needs_plan("research the latest mars mission and then summarize it"))
+        self.assertTrue(needs_plan("compare the two laptops I looked at yesterday please"))
+        self.assertFalse(needs_plan("open discord"))
+        self.assertFalse(needs_plan("what time is it"))
+
+    def test_failed_tool_results_are_recognized(self) -> None:
+        self.assertTrue(_looks_failed("No topic given."))
+        self.assertTrue(_looks_failed("Could not read that file"))
+        self.assertTrue(_looks_failed(""))
+        self.assertFalse(_looks_failed("Lisbon is the capital of Portugal."))
+
+    def test_recovery_suggests_a_different_tool(self) -> None:
+        class Quiet:
+            def complete(self, messages, tools=None):
+                return {"content": "ok"}
+
         with tempfile.TemporaryDirectory() as tmp:
-            desktop = Memory(Path(tmp) / "a.db")
-            cloud = Memory(Path(tmp) / "b.db")
-            desktop.remember("home location", "Denver")
-            cloud.merge_state(desktop.export_state())
-            self.assertEqual(cloud.get_fact("home location"), "Denver")
-            desktop.forget("home location")
-            cloud.merge_state(desktop.export_state())
-            self.assertIsNone(cloud.get_fact("home location"))
-            desktop.merge_state(cloud.export_state())
-            self.assertIsNone(desktop.get_fact("home location"))
+            agent = Agent(Quiet(), Memory(Path(tmp) / "t.db"))
+            advice = agent._recover("wikipedia", "No topic given.", {})
+        self.assertIn("web_search", advice)
 
-    def test_notes_merge_without_duplicating(self) -> None:
+    def test_recovery_gives_up_after_repeated_failures(self) -> None:
+        class Quiet:
+            def complete(self, messages, tools=None):
+                return {"content": "ok"}
+
         with tempfile.TemporaryDirectory() as tmp:
-            desktop = Memory(Path(tmp) / "a.db")
-            cloud = Memory(Path(tmp) / "b.db")
-            desktop.add_note("buy coffee")
-            cloud.merge_state(desktop.export_state())
-            cloud.merge_state(desktop.export_state())
-            self.assertEqual(cloud.export_state()["notes"].__len__(), 1)
+            agent = Agent(Quiet(), Memory(Path(tmp) / "t.db"))
+            failures: dict[str, int] = {}
+            for _ in range(2):
+                self.assertTrue(agent._recover("weather", "Could not geocode", failures))
+            self.assertEqual(agent._recover("weather", "Could not geocode", failures), "")
 
 
-class PresenceTests(unittest.TestCase):
-    def test_twin_defers_while_the_desktop_is_awake(self) -> None:
-        presence = Presence(grace_seconds=60)
-        self.assertFalse(presence.desktop_awake)
-        presence.record()
-        self.assertTrue(presence.desktop_awake)
-        presence.record(at=time.time() - 120)
-        self.assertFalse(presence.desktop_awake)
+class CalculatorTests(unittest.TestCase):
+    def test_arithmetic_and_words(self) -> None:
+        self.assertEqual(calculate("2+2"), "4")
+        self.assertEqual(calculate("18 percent of 2450"), "441")
+        self.assertEqual(calculate("sqrt(196) + 12"), "26")
+        self.assertEqual(calculate("1200 divided by 16"), "75")
+
+    def test_refuses_anything_that_is_not_maths(self) -> None:
+        for bad in ("__import__('os').system('dir')", "open('x')", "[1,2,3]"):
+            with self.assertRaises(CalculationError):
+                calculate(bad)
 
 
-class CloudFormatTests(unittest.TestCase):
-    def test_tool_calls_and_results_are_paired_for_openai(self) -> None:
-        history = [
-            {"role": "system", "content": "rules"},
-            {"role": "user", "content": "weather in Denver"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"function": {"name": "weather", "arguments": {"location": "Denver"}}}
-                ],
-            },
-            {"role": "tool", "tool_name": "weather", "content": "clear, 70F"},
-        ]
-        converted = to_openai_messages(history)
-        call_id = converted[2]["tool_calls"][0]["id"]
-        self.assertEqual(converted[2]["tool_calls"][0]["function"]["arguments"], '{"location": "Denver"}')
-        self.assertEqual(converted[3]["tool_call_id"], call_id)
+class ReminderTests(unittest.TestCase):
+    def test_relative_and_clock_times(self) -> None:
+        now = datetime(2026, 9, 18, 10, 0).astimezone()
+        self.assertEqual(parse_when("in 20 minutes", now), now + timedelta(minutes=20))
+        self.assertEqual(parse_when("in an hour", now), now + timedelta(hours=1))
+        evening = parse_when("at 7pm", now)
+        self.assertIsNotNone(evening)
+        self.assertEqual(evening.hour, 19)
+        self.assertIsNone(parse_when("sometime soonish", now))
 
-    def test_openai_reply_is_converted_back(self) -> None:
-        message = from_openai_message(
-            {
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": "call_abc",
-                        "function": {"name": "web_search", "arguments": '{"query": "spacex"}'},
-                    }
-                ],
-            }
-        )
-        self.assertEqual(message["tool_calls"][0]["function"]["arguments"], {"query": "spacex"})
-        self.assertEqual(message["content"], "")
+    def test_reminders_are_stored_listed_and_fired_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = Memory(Path(tmp) / "t.db")
+            past = datetime.now(timezone.utc) - timedelta(minutes=1)
+            memory.add_reminder("stretch", past)
+            memory.add_reminder("later thing", datetime.now(timezone.utc) + timedelta(hours=5))
+            self.assertEqual(len(memory.pending_reminders()), 2)
+            due = memory.due_reminders()
+            self.assertEqual([body for _i, body in due], ["stretch"])
+            memory.mark_reminder_fired(due[0][0])
+            self.assertEqual(memory.due_reminders(), [])
+            self.assertIn("later thing", memory.cancel_reminder("later"))
+            self.assertEqual(memory.pending_reminders(), [])
 
 
 class RouterTests(unittest.TestCase):

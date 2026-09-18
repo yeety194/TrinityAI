@@ -10,29 +10,41 @@ from typing import Any, Callable
 
 import pyperclip
 
-from trinity import apps, research
+from trinity import apps, reasoning, research
 from trinity.memory import Memory
 
 MAX_TOOL_RESULT = 8000
 
-# Anyone who learns the inbound topic can send Trinity messages, so a phone
-# message cannot reach the tools that touch this PC unless the user opts in.
-REMOTE_SAFE_TOOLS = frozenset(
-    {
-        "web_search",
-        "read_url",
-        "wikipedia",
-        "weather",
-        "remember",
-        "recall",
-        "forget",
-        "list_memory",
-        "add_note",
-        "list_notes",
-        "now",
-        "send_text",
-    }
-)
+READABLE_SUFFIXES = {
+    ".txt",
+    ".md",
+    ".markdown",
+    ".csv",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".ini",
+    ".cfg",
+    ".log",
+    ".py",
+    ".js",
+    ".ts",
+    ".html",
+    ".css",
+    ".xml",
+    ".bat",
+    ".ps1",
+}
+
+# Windows virtual-key codes for the media and volume keys.
+MEDIA_KEYS = {
+    "play": 0xB3,
+    "next": 0xB0,
+    "previous": 0xB1,
+    "mute": 0xAD,
+    "volume_down": 0xAE,
+    "volume_up": 0xAF,
+}
 
 # Models sometimes pass the user's phrasing straight through as the location.
 SELF_LOCATION_RE = re.compile(
@@ -42,23 +54,7 @@ SELF_LOCATION_RE = re.compile(
 ToolFn = Callable[[dict[str, Any], Memory], str]
 
 
-_channel: Any | None = None
-
-
-def set_message_channel(channel: Any | None) -> None:
-    """Register the single phone-link channel used by the send_text tool."""
-    global _channel
-    _channel = channel
-
-
-def schemas(allowed: frozenset[str] | None = None) -> list[dict[str, Any]]:
-    tools = _all_schemas()
-    if allowed is None:
-        return tools
-    return [tool for tool in tools if tool["function"]["name"] in allowed]
-
-
-def _all_schemas() -> list[dict[str, Any]]:
+def schemas() -> list[dict[str, Any]]:
     return [
         _fn(
             "open_app",
@@ -184,25 +180,72 @@ def _all_schemas() -> list[dict[str, Any]]:
             [],
         ),
         _fn(
-            "send_text",
-            "Send a short message to the user's phone. Use when they ask to be texted or notified.",
-            {"message": _str("What to send, kept short")},
-            ["message"],
+            "calculate",
+            "Evaluate arithmetic exactly. Always use this for sums, percentages, and conversions "
+            "instead of working them out yourself.",
+            {"expression": _str("Maths expression, e.g. '18% of 2450' or 'sqrt(196)+12'")},
+            ["expression"],
+        ),
+        _fn(
+            "deep_research",
+            "Search the web, read the top sources, and return notes with links. Use for anything "
+            "that deserves more than a single search.",
+            {
+                "topic": _str("What to investigate"),
+                "depth": _str("How many sources to read, 1 to 4 (default 3)"),
+            },
+            ["topic"],
+        ),
+        _fn(
+            "set_reminder",
+            "Schedule a reminder. Understands 'in 20 minutes', 'in an hour', 'at 7pm', 'tomorrow'.",
+            {
+                "text": _str("What to remind about"),
+                "when": _str("When, in the user's own words"),
+            },
+            ["text", "when"],
+        ),
+        _fn(
+            "list_reminders",
+            "Show reminders that have not fired yet.",
+            {},
+            [],
+        ),
+        _fn(
+            "cancel_reminder",
+            "Cancel a pending reminder by describing it, or 'all'.",
+            {"text": _str("Words from the reminder, or 'all'")},
+            ["text"],
+        ),
+        _fn(
+            "system_status",
+            "Live machine health: CPU, memory, disk, and battery.",
+            {},
+            [],
+        ),
+        _fn(
+            "list_directory",
+            "List what is inside a folder under the user profile.",
+            {"path": _str("Folder path or special name like desktop or downloads")},
+            ["path"],
+        ),
+        _fn(
+            "read_document",
+            "Read a text-based file under the user profile so you can summarize or answer about it.",
+            {"path": _str("Path to a text, code, markdown, csv, or json file")},
+            ["path"],
+        ),
+        _fn(
+            "media_control",
+            "Control playback and volume on this PC: play, pause, next, previous, "
+            "volume_up, volume_down, mute.",
+            {"action": _str("One of play, pause, next, previous, volume_up, volume_down, mute")},
+            ["action"],
         ),
     ]
 
 
-def dispatch(
-    name: str,
-    arguments: dict[str, Any],
-    memory: Memory,
-    allowed: frozenset[str] | None = None,
-) -> str:
-    if allowed is not None and name not in allowed:
-        return (
-            f"The {name} tool only works at the PC, not over the phone link. "
-            "Offer to do it when the user is back."
-        )
+def dispatch(name: str, arguments: dict[str, Any], memory: Memory) -> str:
     fn = HANDLERS.get(name)
     if not fn:
         return f"Unknown tool: {name}"
@@ -334,16 +377,151 @@ def _search_files(args: dict[str, Any], _m: Memory) -> str:
     return "\n".join(hits) if hits else "No matching files."
 
 
-def _send_text(args: dict[str, Any], _m: Memory) -> str:
-    message = _arg(args, "message", "text", "body", "content", "value")
-    if not message:
-        return "Nothing to send."
-    if _channel is None or not getattr(_channel, "configured", False):
-        return "Texting is off. Turn on the phone link in Trinity's Phone tab first."
+def _calculate(args: dict[str, Any], _m: Memory) -> str:
+    expression = _arg(args, "expression", "expr", "query", "input", "value", "math")
     try:
-        return _channel.publish(message)
-    except Exception as exc:
-        return f"Could not send that: {exc}"
+        return f"{expression} = {reasoning.calculate(expression)}"
+    except reasoning.CalculationError as exc:
+        return str(exc)
+
+
+def _deep_research(args: dict[str, Any], _m: Memory) -> str:
+    topic = _arg(args, "topic", "query", "subject", "q", "value")
+    depth = _arg(args, "depth", "sources", "count", default="3")
+    try:
+        count = int(float(depth))
+    except ValueError:
+        count = 3
+    return research.deep_research(topic, count)
+
+
+def _set_reminder(args: dict[str, Any], memory: Memory) -> str:
+    body = _arg(args, "text", "body", "what", "message", "reminder", "value")
+    when = _arg(args, "when", "time", "delay", "at", "due")
+    if not body:
+        return "What should the reminder say?"
+    due = reasoning.parse_when(when or body)
+    if due is None:
+        return (
+            "I could not read that time. Try 'in 20 minutes', 'at 7pm', or 'tomorrow'."
+        )
+    return memory.add_reminder(body, due)
+
+
+def _list_reminders(_args: dict[str, Any], memory: Memory) -> str:
+    pending = memory.pending_reminders()
+    if not pending:
+        return "Nothing is scheduled."
+    lines = []
+    for _ident, body, due in pending:
+        lines.append(f"- {body} (in {reasoning.describe_delay(due)})")
+    return "\n".join(lines)
+
+
+def _cancel_reminder(args: dict[str, Any], memory: Memory) -> str:
+    return memory.cancel_reminder(_arg(args, "text", "which", "body", "value"))
+
+
+def _system_status(_args: dict[str, Any], _m: Memory) -> str:
+    try:
+        import psutil
+    except ImportError:
+        return "System status needs psutil: pip install psutil"
+    memory_info = psutil.virtual_memory()
+    disk = psutil.disk_usage(str(Path.home().anchor or "C:\\"))
+    lines = [
+        f"CPU: {psutil.cpu_percent(interval=0.4)}% across {psutil.cpu_count()} threads",
+        f"Memory: {memory_info.percent}% used "
+        f"({memory_info.used / 1e9:.1f} of {memory_info.total / 1e9:.1f} GB)",
+        f"Disk: {disk.percent}% used ({disk.free / 1e9:.0f} GB free)",
+    ]
+    battery = getattr(psutil, "sensors_battery", lambda: None)()
+    if battery is not None:
+        state = "charging" if battery.power_plugged else "on battery"
+        lines.append(f"Battery: {battery.percent:.0f}% {state}")
+    return "\n".join(lines)
+
+
+def _list_directory(args: dict[str, Any], _m: Memory) -> str:
+    root = _allowed_root(_arg(args, "path", "folder", "directory", "where", default="home"))
+    if root is None:
+        return "That location is outside the user profile."
+    if not root.exists():
+        return f"Path not found: {root}"
+    entries = sorted(root.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+    if not entries:
+        return f"{root} is empty."
+    lines = [f"Contents of {root}:"]
+    for entry in entries[:40]:
+        if entry.is_dir():
+            lines.append(f"- {entry.name}/")
+        else:
+            lines.append(f"- {entry.name} ({entry.stat().st_size / 1024:.0f} KB)")
+    if len(entries) > 40:
+        lines.append(f"…and {len(entries) - 40} more")
+    return "\n".join(lines)
+
+
+def _read_document(args: dict[str, Any], _m: Memory) -> str:
+    raw = _arg(args, "path", "file", "document", "name", "value")
+    if not raw:
+        return "Which file?"
+    target = _allowed_root(raw)
+    if target is None:
+        return "That file is outside the user profile."
+    if target.is_dir():
+        return f"{target} is a folder. Use list_directory for it."
+    if not target.exists():
+        return f"File not found: {target}"
+    if target.suffix.lower() not in READABLE_SUFFIXES:
+        return (
+            f"I can only read text-based files ({', '.join(sorted(READABLE_SUFFIXES))}), "
+            f"and that is {target.suffix or 'unknown'}."
+        )
+    if target.stat().st_size > 2_000_000:
+        return f"{target.name} is too large to read in one go."
+    try:
+        text = target.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"Could not read {target.name}: {exc}"
+    clipped = text[:7000]
+    suffix = "\n…(truncated)" if len(text) > len(clipped) else ""
+    return f"{target.name} ({len(text)} characters):\n{clipped}{suffix}"
+
+
+def _media_control(args: dict[str, Any], _m: Memory) -> str:
+    action = _arg(args, "action", "command", "control", "value").lower().replace(" ", "_")
+    aliases = {
+        "play_pause": "play",
+        "pause": "play",
+        "resume": "play",
+        "stop": "play",
+        "skip": "next",
+        "next_track": "next",
+        "previous_track": "previous",
+        "back": "previous",
+        "louder": "volume_up",
+        "quieter": "volume_down",
+        "volume": "volume_up",
+        "unmute": "mute",
+    }
+    action = aliases.get(action, action)
+    key = MEDIA_KEYS.get(action)
+    if key is None:
+        return f"I do not know the media action '{action}'."
+    try:
+        _tap_key(key)
+    except OSError as exc:
+        return f"Could not send that key: {exc}"
+    return f"Sent {action.replace('_', ' ')}."
+
+
+def _tap_key(code: int) -> None:
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    user32.keybd_event(code, 0, 0, 0)
+    user32.keybd_event(code, 0, 2, 0)
 
 
 def _system_info(_args: dict[str, Any], _m: Memory) -> str:
@@ -417,7 +595,15 @@ HANDLERS: dict[str, ToolFn] = {
     "clipboard_set": _clipboard_set,
     "search_files": _search_files,
     "system_info": _system_info,
-    "send_text": _send_text,
+    "calculate": _calculate,
+    "deep_research": _deep_research,
+    "set_reminder": _set_reminder,
+    "list_reminders": _list_reminders,
+    "cancel_reminder": _cancel_reminder,
+    "system_status": _system_status,
+    "list_directory": _list_directory,
+    "read_document": _read_document,
+    "media_control": _media_control,
 }
 
 

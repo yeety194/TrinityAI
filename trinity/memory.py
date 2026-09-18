@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -57,29 +56,15 @@ class Memory:
                     body TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS deletions (
-                    key TEXT PRIMARY KEY,
-                    deleted_at TEXT NOT NULL
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    body TEXT NOT NULL,
+                    due_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    fired INTEGER NOT NULL DEFAULT 0
                 );
                 """
             )
-            self._migrate_notes(conn)
-
-    def _migrate_notes(self, conn: sqlite3.Connection) -> None:
-        """Notes need a stable id and an edit time to survive two-way sync."""
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(notes)")}
-        if "uid" not in columns:
-            conn.execute("ALTER TABLE notes ADD COLUMN uid TEXT")
-        if "updated_at" not in columns:
-            conn.execute("ALTER TABLE notes ADD COLUMN updated_at TEXT")
-        conn.execute(
-            "UPDATE notes SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''"
-        )
-        for row in conn.execute("SELECT id FROM notes WHERE uid IS NULL OR uid = ''").fetchall():
-            conn.execute(
-                "UPDATE notes SET uid = ? WHERE id = ?", (secrets.token_hex(8), row["id"])
-            )
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS notes_uid ON notes(uid)")
 
     def remember(self, key: str, value: str) -> str:
         key = _clean_key(key)
@@ -100,7 +85,6 @@ class Memory:
         with self._db() as conn:
             cur = conn.execute("DELETE FROM facts WHERE key = ?", (key,))
             if cur.rowcount:
-                self._tombstone(conn, key)
                 return f"Forgot {key}."
             # fuzzy
             rows = conn.execute("SELECT key FROM facts").fetchall()
@@ -108,17 +92,8 @@ class Memory:
         if match:
             with self._db() as conn:
                 conn.execute("DELETE FROM facts WHERE key = ?", (match,))
-                self._tombstone(conn, match)
             return f"Forgot {match}."
         return f"Nothing stored under {key}."
-
-    def _tombstone(self, conn: sqlite3.Connection, key: str) -> None:
-        """Record the deletion so a sync does not resurrect the fact."""
-        conn.execute(
-            "INSERT INTO deletions(key, deleted_at) VALUES(?,?) "
-            "ON CONFLICT(key) DO UPDATE SET deleted_at=excluded.deleted_at",
-            (key, _now()),
-        )
 
     def get_fact(self, key: str) -> str | None:
         with self._db() as conn:
@@ -173,12 +148,8 @@ class Memory:
         body = body.strip()
         if not body:
             return "Note was empty."
-        stamp = _now()
         with self._db() as conn:
-            conn.execute(
-                "INSERT INTO notes(body, created_at, uid, updated_at) VALUES(?,?,?,?)",
-                (body, stamp, secrets.token_hex(8), stamp),
-            )
+            conn.execute("INSERT INTO notes(body, created_at) VALUES(?,?)", (body, _now()))
         return "Note saved."
 
     def recent_notes(self, limit: int = 8) -> str:
@@ -197,103 +168,59 @@ class Memory:
             return "(empty — use remember when the user shares durable facts)"
         return "\n".join(f"- {k}: {v}" for k, v in facts)
 
-    def export_state(self) -> dict[str, list[dict[str, str]]]:
-        """Everything needed to merge this memory with another copy of Trinity."""
+    def add_reminder(self, body: str, due_at: datetime) -> str:
+        body = body.strip()
+        if not body:
+            return "The reminder had no text."
         with self._db() as conn:
-            facts = [
-                {"key": r["key"], "value": r["value"], "updated_at": r["updated_at"]}
-                for r in conn.execute("SELECT key, value, updated_at FROM facts")
-            ]
-            notes = [
-                {
-                    "uid": r["uid"],
-                    "body": r["body"],
-                    "created_at": r["created_at"],
-                    "updated_at": r["updated_at"],
-                }
-                for r in conn.execute("SELECT uid, body, created_at, updated_at FROM notes")
-            ]
-            deletions = [
-                {"key": r["key"], "deleted_at": r["deleted_at"]}
-                for r in conn.execute("SELECT key, deleted_at FROM deletions")
-            ]
-        return {"facts": facts, "notes": notes, "deletions": deletions}
+            conn.execute(
+                "INSERT INTO reminders(body, due_at, created_at) VALUES(?,?,?)",
+                (body, due_at.astimezone(timezone.utc).isoformat(), _now()),
+            )
+        local = due_at.astimezone().strftime("%A %I:%M %p")
+        return f"Reminder set for {local}: {body}"
 
-    def merge_state(self, payload: dict[str, list[dict[str, str]]]) -> dict[str, int]:
-        """Merge another copy's state in. Newest edit wins; deletions are respected."""
-        facts = payload.get("facts") or []
-        notes = payload.get("notes") or []
-        deletions = payload.get("deletions") or []
-        counts = {"facts": 0, "notes": 0, "deletions": 0}
+    def pending_reminders(self) -> list[tuple[int, str, datetime]]:
         with self._db() as conn:
-            for item in deletions:
-                key = _clean_key(str(item.get("key") or ""))
-                stamp = str(item.get("deleted_at") or "")
-                if not key or not stamp:
-                    continue
-                existing = conn.execute(
-                    "SELECT deleted_at FROM deletions WHERE key = ?", (key,)
-                ).fetchone()
-                if existing and str(existing["deleted_at"]) >= stamp:
-                    continue
-                conn.execute(
-                    "INSERT INTO deletions(key, deleted_at) VALUES(?,?) "
-                    "ON CONFLICT(key) DO UPDATE SET deleted_at=excluded.deleted_at",
-                    (key, stamp),
-                )
-                counts["deletions"] += 1
-                local = conn.execute(
-                    "SELECT updated_at FROM facts WHERE key = ?", (key,)
-                ).fetchone()
-                if local and str(local["updated_at"]) <= stamp:
-                    conn.execute("DELETE FROM facts WHERE key = ?", (key,))
+            rows = conn.execute(
+                "SELECT id, body, due_at FROM reminders WHERE fired = 0 ORDER BY due_at"
+            ).fetchall()
+        result = []
+        for row in rows:
+            try:
+                due = datetime.fromisoformat(row["due_at"])
+            except ValueError:
+                continue
+            result.append((int(row["id"]), row["body"], due))
+        return result
 
-            for item in facts:
-                key = _clean_key(str(item.get("key") or ""))
-                value = str(item.get("value") or "").strip()
-                stamp = str(item.get("updated_at") or "")
-                if not key or not value:
-                    continue
-                gone = conn.execute(
-                    "SELECT deleted_at FROM deletions WHERE key = ?", (key,)
-                ).fetchone()
-                if gone and str(gone["deleted_at"]) > stamp:
-                    continue
-                local = conn.execute(
-                    "SELECT updated_at FROM facts WHERE key = ?", (key,)
-                ).fetchone()
-                if local and str(local["updated_at"]) >= stamp:
-                    continue
-                conn.execute(
-                    "INSERT INTO facts(key, value, updated_at) VALUES(?,?,?) "
-                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-                    (key, value, stamp or _now()),
-                )
-                counts["facts"] += 1
+    def due_reminders(self, now: datetime | None = None) -> list[tuple[int, str]]:
+        moment = now or datetime.now(timezone.utc)
+        due = [
+            (ident, body)
+            for ident, body, when in self.pending_reminders()
+            if when <= moment
+        ]
+        return due
 
-            for item in notes:
-                uid = str(item.get("uid") or "").strip()
-                body = str(item.get("body") or "").strip()
-                if not uid or not body:
-                    continue
-                stamp = str(item.get("updated_at") or item.get("created_at") or _now())
-                local = conn.execute(
-                    "SELECT updated_at FROM notes WHERE uid = ?", (uid,)
-                ).fetchone()
-                if local:
-                    if str(local["updated_at"]) >= stamp:
-                        continue
-                    conn.execute(
-                        "UPDATE notes SET body = ?, updated_at = ? WHERE uid = ?",
-                        (body, stamp, uid),
-                    )
-                else:
-                    conn.execute(
-                        "INSERT INTO notes(body, created_at, uid, updated_at) VALUES(?,?,?,?)",
-                        (body, str(item.get("created_at") or stamp), uid, stamp),
-                    )
-                counts["notes"] += 1
-        return counts
+    def mark_reminder_fired(self, reminder_id: int) -> None:
+        with self._db() as conn:
+            conn.execute("UPDATE reminders SET fired = 1 WHERE id = ?", (reminder_id,))
+
+    def cancel_reminder(self, text: str) -> str:
+        pending = self.pending_reminders()
+        if not pending:
+            return "Nothing is scheduled."
+        needle = text.strip().lower()
+        if not needle or needle in {"all", "everything"}:
+            with self._db() as conn:
+                conn.execute("UPDATE reminders SET fired = 1 WHERE fired = 0")
+            return f"Cancelled {len(pending)} reminders."
+        for ident, body, _when in pending:
+            if needle in body.lower():
+                self.mark_reminder_fired(ident)
+                return f"Cancelled: {body}"
+        return f"No pending reminder matches '{text}'."
 
     def capture_user_fact(self, text: str) -> str | None:
         """Remember clear, user-owned facts even if the model forgets to call a tool.

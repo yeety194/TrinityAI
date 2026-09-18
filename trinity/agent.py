@@ -11,28 +11,76 @@ from trinity.memory import Memory
 from trinity.router import routing_hint
 from trinity.skills import dispatch, known_tools, pretty_args, schemas
 
-MAX_ROUNDS = 8
+MAX_ROUNDS = 12
 MAX_HISTORY_MESSAGES = 48
 KEEP_HISTORY_MESSAGES = 28
 
-DESKTOP_ONLY_REPLY = (
-    "Opening apps, folders, and files only works at the PC, not over the phone link. "
-    "From here I can research, check the weather, and handle your notes and memory."
+# When one source comes up empty, reach for the next one instead of giving up.
+TOOL_FALLBACKS = {
+    "wikipedia": "web_search",
+    "web_search": "wikipedia",
+    "read_url": "web_search",
+    "open_app": "list_apps",
+    "search_files": "list_directory",
+    "read_document": "list_directory",
+    "weather": "web_search",
+}
+
+FAILURE_MARKERS = (
+    "no topic given",
+    "no results",
+    "no matching",
+    "could not",
+    "couldn't",
+    "failed",
+    "unknown tool",
+    "not found",
+    "no web results",
+    "nothing stored",
+    "no location given",
+    "path not found",
+    "need a",
+    "is not installed",
+    "unreadable",
+)
+
+PLAN_TRIGGERS = (
+    " and then ",
+    " then ",
+    " after that ",
+    " also ",
+    "compare",
+    "research",
+    "summarize",
+    "plan ",
+    "figure out",
+    "look into",
+    "deep dive",
+    "step by step",
 )
 
 
+def needs_plan(text: str) -> bool:
+    """Plan only for genuinely multi-part work; simple asks stay fast."""
+    lowered = f" {text.strip().lower()} "
+    if len(lowered.split()) < 8:
+        return False
+    if any(trigger in lowered for trigger in PLAN_TRIGGERS):
+        return True
+    return lowered.count("?") > 1
+
+
+def _looks_failed(result: str) -> bool:
+    lowered = result.strip().lower()
+    if not lowered:
+        return True
+    return any(marker in lowered[:160] for marker in FAILURE_MARKERS)
+
+
 class Agent:
-    def __init__(
-        self,
-        brain: Brain,
-        memory: Memory | None = None,
-        allowed_tools: frozenset[str] | None = None,
-        remote: bool = False,
-    ) -> None:
+    def __init__(self, brain: Brain, memory: Memory | None = None) -> None:
         self.brain = brain
         self.memory = memory or Memory()
-        self.allowed_tools = allowed_tools
-        self.remote = remote
         self.history: list[dict[str, Any]] = []
         self._session_summary = ""
         self._turn_count = 0
@@ -60,32 +108,32 @@ class Agent:
             yield ("activity", "saved a personal memory")
             yield ("trace", "Saved a clear personal fact to long-term memory")
         hint = routing_hint(user_text, self.memory.get_fact("home location") or "")
-        if hint and self.allowed_tools is not None:
-            named = _hint_tool(hint)
-            if named and named not in self.allowed_tools:
-                # Asking for a desktop-only action; answer plainly instead of
-                # steering the model toward a tool this session cannot use.
-                yield ("trace", f"{named} is unavailable in this session")
-                reply = DESKTOP_ONLY_REPLY
-                self.history.append({"role": "user", "content": user_text})
-                self.history.append({"role": "assistant", "content": reply})
-                yield ("final", reply)
-                return
         payload = user_text
         if hint:
             payload = f"{user_text}\n\n[Trinity routing hint: {hint}]"
         self.history.append({"role": "user", "content": payload})
         self._trim()
-        tools = schemas(self.allowed_tools)
+        tools = schemas()
         final = ""
+        plan: list[str] = []
+        if needs_plan(user_text):
+            plan = self._make_plan(user_text)
+            if plan:
+                yield ("trace", "Plan: " + " | ".join(plan))
+                self.history.append(
+                    {
+                        "role": "assistant",
+                        "content": "My plan:\n" + "\n".join(f"{i}. {s}" for i, s in enumerate(plan, 1)),
+                    }
+                )
+        failures: dict[str, int] = {}
+        nudged_empty = False
         for _round in range(MAX_ROUNDS):
             messages = [
                 {
                     "role": "system",
                     "content": build_system_prompt(
-                        self.memory.format_for_prompt(),
-                        self._session_summary,
-                        remote=self.remote,
+                        self.memory.format_for_prompt(), self._session_summary
                     ),
                 },
                 *self.history,
@@ -103,7 +151,7 @@ class Agent:
                 tool_calls = _parse_text_tools(content)
             if not tool_calls and _round == 0:
                 forced = _force_from_hint(hint)
-                if forced and (self.allowed_tools is None or forced[0] in self.allowed_tools):
+                if forced:
                     name, args = forced
                     tool_calls = [{"function": {"name": name, "arguments": args}}]
             if tool_calls:
@@ -121,15 +169,30 @@ class Agent:
                     yield ("status", name.replace("_", " "))
                     yield ("activity", f"{name} {pretty_args(args)}".strip())
                     yield ("trace", f"Using {name}: {pretty_args(args) or 'no arguments'}")
-                    result = dispatch(name, args, self.memory, self.allowed_tools)
+                    result = dispatch(name, args, self.memory)
                     yield ("trace", f"{name} finished: {_brief(result)}")
                     self.history.append(
-                        {
-                            "role": "tool",
-                            "tool_name": name,
-                            "content": result,
-                        }
+                        {"role": "tool", "tool_name": name, "content": result}
                     )
+                    advice = self._recover(name, result, failures)
+                    if advice:
+                        yield ("trace", f"Recovering: {_brief(advice)}")
+                        self.history.append({"role": "user", "content": advice})
+                continue
+            if not content and not nudged_empty:
+                # An empty reply usually means it stalled; ask once for a real answer.
+                nudged_empty = True
+                yield ("trace", "Empty reply; asking for a real answer")
+                self.history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "You returned nothing. Answer in plain words now, using what the "
+                            "tools already returned. If you cannot do something, say so and "
+                            "explain what you can do instead."
+                        ),
+                    }
+                )
                 continue
             final = content
             if final:
@@ -139,6 +202,49 @@ class Agent:
             yield ("final", final or "I don't have an answer for that one.")
             return
         yield ("final", final or "I ran out of tool steps. Try asking in a smaller piece.")
+
+    def _make_plan(self, user_text: str) -> list[str]:
+        """Sketch the steps for a multi-part request before touching any tools."""
+        prompt = (
+            "Break this request into at most four short imperative steps naming the tool for "
+            "each step where one applies. Available tools: "
+            f"{', '.join(sorted(known_tools()))}.\n"
+            "Reply with one step per line and nothing else.\n\n"
+            f"Request: {user_text}"
+        )
+        try:
+            message = self.brain.complete(
+                [
+                    {"role": "system", "content": "You plan tool use for a desktop assistant."},
+                    {"role": "user", "content": prompt},
+                ]
+            )
+        except BrainError:
+            return []
+        steps = []
+        for line in str(message.get("content") or "").splitlines():
+            step = line.strip().lstrip("-*0123456789.) ").strip()
+            if step:
+                steps.append(step)
+        return steps[:4]
+
+    def _recover(self, name: str, result: str, failures: dict[str, int]) -> str:
+        """Nudge toward a different approach when a tool comes back empty or broken."""
+        if not _looks_failed(result):
+            return ""
+        failures[name] = failures.get(name, 0) + 1
+        if failures[name] > 2:
+            return ""
+        alternative = TOOL_FALLBACKS.get(name)
+        if alternative:
+            return (
+                f"{name} did not return anything useful. Try {alternative} instead, "
+                "or correct the arguments and try once more."
+            )
+        return (
+            f"{name} did not return anything useful. Check the arguments, try a different "
+            "tool, or tell the user plainly that it did not work."
+        )
 
     def _trim(self) -> None:
         if len(self.history) <= MAX_HISTORY_MESSAGES:

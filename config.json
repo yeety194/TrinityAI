@@ -1,0 +1,21 @@
+{
+  "llm": {
+    "base_url": "http://127.0.0.1:11434",
+    "model": "hermes3:8b",
+    "temperature": 0.25,
+    "context_window": 16384
+  },
+  "voice": {
+    "piper_voice": "en_US-amy-medium",
+    "piper_length_scale": 0.95,
+    "wake_word": "trinity",
+    "speak_replies": true,
+    "whisper_model": "tiny.en",
+    "sample_rate": 16000,
+    "silence_seconds": 1.1,
+    "max_record_seconds": 20
+  },
+  "ui": {
+    "always_on_top": false
+  }
+}

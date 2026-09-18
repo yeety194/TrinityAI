@@ -16,6 +16,8 @@ A reactor core that reacts to what she is doing — idle, listening, thinking, s
 
 **Act on this PC.** Open apps, sites, and folders. Search filenames, list directories, and read text files. Control playback and volume. Report live CPU, memory, disk, and battery. Read and write the clipboard.
 
+**Edit herself.** She can list, read, patch, or rewrite her own source under `trinity/` and `tests/` only — never `data/`, secrets, or the rest of your PC. A restart is needed for those changes to load.
+
 **Research.** A single search for quick facts, or `deep_research` to search, actually read the top sources, and hand back notes with links to cite.
 
 **Remember.** Durable facts in a local SQLite archive, shown in the CORE tab. She also captures unmistakable personal facts on her own — your name, where you live, favourites, stated preferences — so a forgetful local model still keeps them.
@@ -36,7 +38,7 @@ Needs Python 3.12, Ollama, and a model (default `hermes3:8b`). First mic use dow
 
 ## Voice
 
-**ElevenLabs** gives her a natural voice. Open the **VOICE** tab, paste your API key, press **SAVE**, then **LOAD MY VOICES** and pick one. The key is stored in `data/secrets.json`, which git ignores; `ELEVENLABS_API_KEY` works too.
+**ElevenLabs** gives her a natural voice. Open the **VOICE** tab, copy an API key from [elevenlabs.io → Developers → API Keys](https://elevenlabs.io/app/settings/api-keys) (it usually starts with `sk_`), then press **PASTE** or **SAVE**. A Voice ID is not the key. The key is stored in `data/secrets.json`, which git ignores; `ELEVENLABS_API_KEY` works too. If your account uses data residency, she will try the matching isolated API host automatically.
 
 **Piper** runs on this PC with no account and no network. Install a voice once:
 
@@ -60,6 +62,7 @@ She falls back to Piper automatically whenever ElevenLabs is unreachable, unauth
 - "Remind me to stretch in 20 minutes"
 - "How's this machine doing?"
 - "Remember that my name is …"
+- "Change your code so reminders also say the time"
 
 ## Config
 

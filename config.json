@@ -7,9 +7,10 @@
   },
   "voice": {
     "engine": "elevenlabs",
-    "elevenlabs_voice_id": "21m00Tcm4TlvDq8ikWAM",
-    "elevenlabs_voice_name": "Rachel",
+    "elevenlabs_voice_id": "EXAVITQu4vr4xnSDxMaL",
+    "elevenlabs_voice_name": "Sarah - Mature, Reassuring, Confident",
     "elevenlabs_model": "eleven_turbo_v2_5",
+    "elevenlabs_api_root": "https://api.elevenlabs.io",
     "elevenlabs_stability": 0.45,
     "elevenlabs_similarity": 0.8,
     "piper_voice": "en_US-amy-medium",

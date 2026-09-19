@@ -24,6 +24,9 @@ TOOL_FALLBACKS = {
     "search_files": "list_directory",
     "read_document": "list_directory",
     "weather": "web_search",
+    "write_own_code": "read_own_code",
+    "patch_own_code": "read_own_code",
+    "read_own_code": "list_own_code",
 }
 
 FAILURE_MARKERS = (

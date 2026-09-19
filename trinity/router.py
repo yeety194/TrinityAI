@@ -60,6 +60,16 @@ def routing_hint(text: str, home_location: str = "") -> str | None:
     if re.search(r"\b(what time|what'?s the time|date today)\b", lowered):
         return "Call now."
 
+    if re.search(
+        r"\b(change your (?:own )?code|edit yourself|modify yourself|fix yourself|"
+        r"update your (?:own )?(?:code|source)|rewrite your|patch your)\b",
+        lowered,
+    ):
+        return (
+            "Use list_own_code / read_own_code, then patch_own_code or write_own_code. "
+            "Only trinity/ and tests/ are writable."
+        )
+
     return None
 
 

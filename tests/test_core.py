@@ -20,7 +20,7 @@ from trinity.memory import Memory
 from trinity.reasoning import CalculationError, calculate, parse_when
 from trinity.research import describe_weather_code
 from trinity.router import routing_hint
-from trinity.skills import _arg, dispatch, schemas
+from trinity.skills import _arg, _own_code_path, dispatch, schemas
 
 
 class PickAppTests(unittest.TestCase):
@@ -258,6 +258,67 @@ class ToolParsingTests(unittest.TestCase):
     def test_forced_hint_must_name_a_real_tool(self) -> None:
         self.assertEqual(_force_from_hint("Call open_app with name=discord"), ("open_app", {"name": "discord"}))
         self.assertIsNone(_force_from_hint("Call make_coffee with strength=strong"))
+
+
+class OwnCodeTests(unittest.TestCase):
+    def test_own_code_tools_are_registered(self) -> None:
+        names = {item["function"]["name"] for item in schemas()}
+        for name in ("list_own_code", "read_own_code", "write_own_code", "patch_own_code"):
+            self.assertIn(name, names)
+
+    def test_path_jail_blocks_escapes_and_data(self) -> None:
+        self.assertIsNone(_own_code_path("../Desktop/secret.txt"))
+        self.assertIsNone(_own_code_path("data/secrets.json"))
+        self.assertIsNone(_own_code_path("config.json"))
+        self.assertIsNone(_own_code_path(str(Path.home() / "Documents" / "notes.txt")))
+        allowed = _own_code_path("trinity/skills.py")
+        self.assertIsNotNone(allowed)
+        self.assertTrue(str(allowed).endswith("skills.py"))
+
+    def test_write_and_patch_roundtrip_inside_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            # Exercise the tools against a real file under tests/, then clean up.
+            rel = Path("tests") / "_trinity_self_edit_probe.py"
+            probe = Path(__file__).resolve().parent / "_trinity_self_edit_probe.py"
+            mem = Memory(Path(tmp) / "t.db")
+            try:
+                written = dispatch(
+                    "write_own_code",
+                    {"path": rel.as_posix(), "content": "VALUE = 1\n"},
+                    mem,
+                )
+                self.assertIn("Wrote", written)
+                self.assertTrue(probe.exists())
+                self.assertEqual(probe.read_text(encoding="utf-8"), "VALUE = 1\n")
+
+                denied = dispatch(
+                    "write_own_code",
+                    {"path": "data/secrets.json", "content": "nope"},
+                    mem,
+                )
+                self.assertIn("outside Trinity's own code", denied)
+
+                patched = dispatch(
+                    "patch_own_code",
+                    {
+                        "path": rel.as_posix(),
+                        "old_string": "VALUE = 1",
+                        "new_string": "VALUE = 2",
+                    },
+                    mem,
+                )
+                self.assertIn("Patched", patched)
+                self.assertEqual(probe.read_text(encoding="utf-8"), "VALUE = 2\n")
+
+                listed = dispatch("list_own_code", {"path": "tests"}, mem)
+                self.assertIn("_trinity_self_edit_probe.py", listed)
+            finally:
+                if probe.exists():
+                    probe.unlink()
+
+    def test_self_edit_requests_get_a_routing_hint(self) -> None:
+        hint = routing_hint("Can you change your own code to add a joke?") or ""
+        self.assertIn("patch_own_code", hint)
 
 
 class SpeechKeyTests(unittest.TestCase):

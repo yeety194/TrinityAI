@@ -14,9 +14,7 @@ A reactor core that reacts to what she is doing — idle, listening, thinking, s
 
 **Think.** Multi-part requests get a short plan before any tool runs. When a tool comes back empty she changes the arguments or switches tools instead of giving up, and a stalled reply gets one nudge rather than a shrug.
 
-**Act on this PC.** Open apps, sites, and folders. Search filenames, list directories, and read text files. Control playback and volume. Report live CPU, memory, disk, and battery. Read and write the clipboard.
-
-**Edit herself.** She can list, read, patch, or rewrite her own source under `trinity/` and `tests/` only — never `data/`, secrets, or the rest of your PC. A restart is needed for those changes to load.
+**Act on this PC.** Open apps, sites, and folders. Search filenames, list directories, and read text files. Control playback and volume. Drive the keyboard and mouse when you flip on **AUTOMATION** (off by default). Report live CPU, memory, disk, and battery. Read and write the clipboard.
 
 **Research.** A single search for quick facts, or `deep_research` to search, actually read the top sources, and hand back notes with links to cite.
 
@@ -62,9 +60,13 @@ She falls back to Piper automatically whenever ElevenLabs is unreachable, unauth
 - "Remind me to stretch in 20 minutes"
 - "How's this machine doing?"
 - "Remember that my name is …"
-- "Change your code so reminders also say the time"
+- (with AUTOMATION on) "Move the mouse to the center of the screen and click"
+- (with AUTOMATION on) "Type hello world and press Enter"
+- (with AUTOMATION on) "Press ctrl+c"
 
-## Config
+## Keyboard and mouse automation
+
+Off by default. Flip **AUTOMATION (MOUSE/KEYS)** in the left rail, or set `automation.enabled` to `true` in `config.json`. While it is on she can move/click/scroll the mouse, type text, press keys, and send hotkeys through Windows `SendInput` / `keybd_event`. Turn it off when you do not want her driving input.
 
 `config.json`
 
@@ -79,6 +81,7 @@ She falls back to Piper automatically whenever ElevenLabs is unreachable, unauth
 | `voice.piper_length_scale` | Speaking pace; below 1.0 is faster |
 | `voice.wake_word` | Wake phrase when listening is armed |
 | `voice.whisper_model` | `tiny.en` or `base.en` |
+| `automation.enabled` | Allow keyboard/mouse tools (`false` by default) |
 
 Memory lives in `data/trinity.db`. **NEW SESSION** clears the conversation, not the archive.
 

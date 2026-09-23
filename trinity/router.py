@@ -60,6 +60,17 @@ def routing_hint(text: str, home_location: str = "") -> str | None:
     if re.search(r"\b(what time|what'?s the time|date today)\b", lowered):
         return "Call now."
 
+    if re.search(
+        r"\b(click|double[- ]?click|right[- ]?click|type\b|"
+        r"press (?:enter|tab|escape|esc|ctrl)|hotkey|move (?:the )?mouse|"
+        r"scroll (?:up|down)|keyboard|mouse)\b",
+        lowered,
+    ):
+        return (
+            "Use mouse_move/mouse_click/mouse_scroll/type_text/key_press/hotkey as needed. "
+            "If automation is off, tell the user to enable the AUTOMATION switch."
+        )
+
     return None
 
 

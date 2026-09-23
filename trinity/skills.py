@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 import pyperclip
 
-from trinity import apps, reasoning, research
+from trinity import apps, automation, reasoning, research
 from trinity.memory import Memory
 
 MAX_TOOL_RESULT = 8000
@@ -58,14 +58,14 @@ def schemas() -> list[dict[str, Any]]:
     return [
         _fn(
             "open_app",
-            "Launch an installed Windows application by name (Chrome, Discord, Spotify, Notepad, Cursor, etc.).",
+            "Launch an installed Windows application by name (Chrome, Spotify, Notepad, Cursor, etc.).",
             {"name": _str("App name as the user said it")},
             ["name"],
         ),
         _fn(
             "list_apps",
             "List installed apps, optionally filtered by a search string.",
-            {"query": _str("Optional filter, e.g. 'discord'")},
+            {"query": _str("Optional filter, e.g. 'spotify'")},
             [],
         ),
         _fn(
@@ -241,6 +241,69 @@ def schemas() -> list[dict[str, Any]]:
             "volume_up, volume_down, mute.",
             {"action": _str("One of play, pause, next, previous, volume_up, volume_down, mute")},
             ["action"],
+        ),
+        _fn(
+            "mouse_move",
+            "Move the mouse cursor to absolute screen coordinates. Requires AUTOMATION on.",
+            {
+                "x": _str("Horizontal pixel position"),
+                "y": _str("Vertical pixel position"),
+            },
+            ["x", "y"],
+        ),
+        _fn(
+            "mouse_click",
+            "Click the mouse (optionally after moving). Requires AUTOMATION on.",
+            {
+                "button": _str("left (default), right, or middle"),
+                "clicks": _str("How many clicks, 1 to 5 (default 1)"),
+                "x": _str("Optional X before clicking"),
+                "y": _str("Optional Y before clicking"),
+            },
+            [],
+        ),
+        _fn(
+            "mouse_scroll",
+            "Scroll the mouse wheel. Positive delta scrolls up. Requires AUTOMATION on.",
+            {
+                "delta": _str("Wheel notches; positive=up, negative=down"),
+                "x": _str("Optional X before scrolling"),
+                "y": _str("Optional Y before scrolling"),
+            },
+            ["delta"],
+        ),
+        _fn(
+            "mouse_position",
+            "Report the current mouse cursor coordinates. Requires AUTOMATION on.",
+            {},
+            [],
+        ),
+        _fn(
+            "screen_size",
+            "Report the primary screen width and height in pixels. Requires AUTOMATION on.",
+            {},
+            [],
+        ),
+        _fn(
+            "type_text",
+            "Type text with the keyboard as if the user typed it. Requires AUTOMATION on.",
+            {
+                "text": _str("Characters to type"),
+                "interval_ms": _str("Optional delay between keys in milliseconds"),
+            },
+            ["text"],
+        ),
+        _fn(
+            "key_press",
+            "Press one key (enter, tab, esc, f5, a, …). Requires AUTOMATION on.",
+            {"key": _str("Key name, e.g. enter, tab, esc, delete, f5, a")},
+            ["key"],
+        ),
+        _fn(
+            "hotkey",
+            "Press a key chord such as ctrl+c or ctrl+shift+s. Requires AUTOMATION on.",
+            {"keys": _str("Chord like 'ctrl+c' or space-separated 'ctrl shift s'")},
+            ["keys"],
         ),
     ]
 
@@ -510,18 +573,101 @@ def _media_control(args: dict[str, Any], _m: Memory) -> str:
     if key is None:
         return f"I do not know the media action '{action}'."
     try:
-        _tap_key(key)
+        # Media keys stay available without the AUTOMATION consent switch.
+        automation.tap_virtual_key(key)
     except OSError as exc:
         return f"Could not send that key: {exc}"
     return f"Sent {action.replace('_', ' ')}."
 
 
-def _tap_key(code: int) -> None:
-    import ctypes
+def _int_arg(args: dict[str, Any], *names: str, default: int | None = None) -> int | None:
+    raw = _arg(args, *names)
+    if not raw:
+        return default
+    try:
+        return int(float(str(raw).strip()))
+    except ValueError:
+        return default
 
-    user32 = ctypes.windll.user32
-    user32.keybd_event(code, 0, 0, 0)
-    user32.keybd_event(code, 0, 2, 0)
+
+def _mouse_move(args: dict[str, Any], _m: Memory) -> str:
+    x = _int_arg(args, "x", "left", "horizontal")
+    y = _int_arg(args, "y", "top", "vertical")
+    if x is None or y is None:
+        return "Need both x and y pixel coordinates."
+    try:
+        return automation.mouse_move(x, y)
+    except OSError as exc:
+        return f"Could not move the mouse: {exc}"
+
+
+def _mouse_click(args: dict[str, Any], _m: Memory) -> str:
+    button = _arg(args, "button", "btn", "which", default="left") or "left"
+    clicks = _int_arg(args, "clicks", "count", "times", default=1) or 1
+    x = _int_arg(args, "x", "left", "horizontal")
+    y = _int_arg(args, "y", "top", "vertical")
+    try:
+        return automation.mouse_click(button, clicks, x, y)
+    except OSError as exc:
+        return f"Could not click: {exc}"
+
+
+def _mouse_scroll(args: dict[str, Any], _m: Memory) -> str:
+    delta = _int_arg(args, "delta", "amount", "notches", "scroll", "value")
+    if delta is None:
+        return "Need a scroll delta (positive = up)."
+    x = _int_arg(args, "x", "left", "horizontal")
+    y = _int_arg(args, "y", "top", "vertical")
+    try:
+        return automation.mouse_scroll(delta, x, y)
+    except OSError as exc:
+        return f"Could not scroll: {exc}"
+
+
+def _mouse_position(_args: dict[str, Any], _m: Memory) -> str:
+    try:
+        return automation.mouse_position()
+    except OSError as exc:
+        return f"Could not read the mouse position: {exc}"
+
+
+def _screen_size(_args: dict[str, Any], _m: Memory) -> str:
+    try:
+        return automation.screen_size()
+    except OSError as exc:
+        return f"Could not read the screen size: {exc}"
+
+
+def _type_text(args: dict[str, Any], _m: Memory) -> str:
+    text = _arg(args, "text", "content", "string", "value", "message")
+    interval = _int_arg(args, "interval_ms", "interval", "delay", "delay_ms", default=0) or 0
+    try:
+        return automation.type_text(text, interval)
+    except OSError as exc:
+        return f"Could not type: {exc}"
+
+
+def _key_press(args: dict[str, Any], _m: Memory) -> str:
+    key = _arg(args, "key", "name", "button", "value")
+    if not key:
+        return "Which key?"
+    try:
+        return automation.key_press(key)
+    except OSError as exc:
+        return f"Could not press that key: {exc}"
+
+
+def _hotkey(args: dict[str, Any], _m: Memory) -> str:
+    raw = _arg(args, "keys", "key", "combo", "chord", "hotkey", "value")
+    if not raw:
+        return "Which hotkey? Example: ctrl+c"
+    parts = automation.parse_hotkey(raw)
+    if not parts:
+        return "Which hotkey? Example: ctrl+c"
+    try:
+        return automation.hotkey(*parts)
+    except OSError as exc:
+        return f"Could not send that hotkey: {exc}"
 
 
 def _system_info(_args: dict[str, Any], _m: Memory) -> str:
@@ -604,6 +750,14 @@ HANDLERS: dict[str, ToolFn] = {
     "list_directory": _list_directory,
     "read_document": _read_document,
     "media_control": _media_control,
+    "mouse_move": _mouse_move,
+    "mouse_click": _mouse_click,
+    "mouse_scroll": _mouse_scroll,
+    "mouse_position": _mouse_position,
+    "screen_size": _screen_size,
+    "type_text": _type_text,
+    "key_press": _key_press,
+    "hotkey": _hotkey,
 }
 
 

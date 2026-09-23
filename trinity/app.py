@@ -196,6 +196,18 @@ class TrinityApp(ctk.CTk):
         self.speak_switch.pack(anchor="w", pady=4)
         if self.cfg["voice"]["speak_replies"]:
             self.speak_switch.select()
+        self.automation_switch = ctk.CTkSwitch(
+            controls,
+            text="AUTOMATION (MOUSE/KEYS)",
+            command=self._toggle_automation,
+            progress_color=CYAN,
+            button_color=CYAN,
+            text_color=TEXT,
+            font=ctk.CTkFont(family=MONO, size=11),
+        )
+        self.automation_switch.pack(anchor="w", pady=4)
+        if self.cfg.get("automation", {}).get("enabled"):
+            self.automation_switch.select()
         ctk.CTkButton(
             controls,
             text="NEW SESSION",
@@ -615,7 +627,23 @@ class TrinityApp(ctk.CTk):
         self._trace("Wake-word listening enabled" if armed else "Wake-word listening disabled")
 
     def _toggle_speak(self) -> None:
-        self.voice.speak_replies = bool(self.speak_switch.get())
+        enabled = bool(self.speak_switch.get())
+        self.voice.speak_replies = enabled
+        self.cfg.setdefault("voice", {})["speak_replies"] = enabled
+        save_config(self.cfg)
+        self._trace("Spoken replies enabled" if enabled else "Spoken replies disabled")
+
+    def _toggle_automation(self) -> None:
+        from trinity import automation
+
+        enabled = bool(self.automation_switch.get())
+        automation.set_enabled(enabled)
+        self.cfg.setdefault("automation", {})["enabled"] = enabled
+        self._trace(
+            "Keyboard/mouse automation enabled"
+            if enabled
+            else "Keyboard/mouse automation disabled"
+        )
 
     def _change_engine(self, label: str) -> None:
         engine = "elevenlabs" if label.startswith("ElevenLabs") else "piper"

@@ -23,5 +23,8 @@
   },
   "ui": {
     "always_on_top": false
+  },
+  "automation": {
+    "enabled": false
   }
 }

@@ -27,10 +27,10 @@ class PickAppTests(unittest.TestCase):
     def test_exact_and_partial(self) -> None:
         apps = [
             {"name": "Google Chrome", "target": "chrome", "kind": "appid"},
-            {"name": "Discord", "target": "discord", "kind": "appid"},
+            {"name": "Spotify", "target": "spotify", "kind": "appid"},
             {"name": "Notepad", "target": "notepad", "kind": "appid"},
         ]
-        self.assertEqual(pick_app("discord", apps)["name"], "Discord")
+        self.assertEqual(pick_app("spotify", apps)["name"], "Spotify")
         self.assertEqual(pick_app("Google Chrome", apps)["name"], "Google Chrome")
         self.assertEqual(pick_app("note", apps)["name"], "Notepad")
 
@@ -39,7 +39,7 @@ class PickAppTests(unittest.TestCase):
         self.assertTrue(looks_like_url("https://example.org/page"))
         self.assertFalse(looks_like_url("notepad.exe"))
         self.assertFalse(looks_like_url("run.bat"))
-        self.assertFalse(looks_like_url("discord"))
+        self.assertFalse(looks_like_url("spotify"))
 
 
 class MemoryTests(unittest.TestCase):
@@ -108,7 +108,7 @@ class ReasoningTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             agent = Agent(SilentBrain(), Memory(Path(tmp) / "t.db"))
-            finals = [p for kind, p in agent.handle("Open Discord") if kind == "final"]
+            finals = [p for kind, p in agent.handle("Open Spotify") if kind == "final"]
         self.assertTrue(finals)
         self.assertNotEqual(finals[0], "Done.")
         self.assertIn("don't have an answer", finals[0])
@@ -134,7 +134,7 @@ class ReasoningTests(unittest.TestCase):
     def test_plans_only_for_multi_step_requests(self) -> None:
         self.assertTrue(needs_plan("research the latest mars mission and then summarize it"))
         self.assertTrue(needs_plan("compare the two laptops I looked at yesterday please"))
-        self.assertFalse(needs_plan("open discord"))
+        self.assertFalse(needs_plan("open spotify"))
         self.assertFalse(needs_plan("what time is it"))
 
     def test_failed_tool_results_are_recognized(self) -> None:
@@ -235,7 +235,7 @@ class ToolArgumentTests(unittest.TestCase):
         self.assertEqual(_arg({"query": "Portugal"}, "topic", "query"), "Portugal")
         self.assertEqual(_arg({"city": "Miami"}, "location", "city"), "Miami")
         self.assertEqual(_arg({}, "path", default="home"), "home")
-        self.assertEqual(_arg({"name": "  Discord "}, "name"), "Discord")
+        self.assertEqual(_arg({"name": "  Spotify "}, "name"), "Spotify")
 
 
 class WeatherFormattingTests(unittest.TestCase):
@@ -256,7 +256,7 @@ class ToolParsingTests(unittest.TestCase):
         self.assertEqual(_parse_text_tools('{"name": "totally_fake_tool"}'), [])
 
     def test_forced_hint_must_name_a_real_tool(self) -> None:
-        self.assertEqual(_force_from_hint("Call open_app with name=discord"), ("open_app", {"name": "discord"}))
+        self.assertEqual(_force_from_hint("Call open_app with name=spotify"), ("open_app", {"name": "spotify"}))
         self.assertIsNone(_force_from_hint("Call make_coffee with strength=strong"))
 
 

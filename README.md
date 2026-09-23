@@ -1,28 +1,22 @@
 # Trinity
 
-A local desktop assistant with a JARVIS-style interface: a live arc-reactor HUD, voice in and out, long-term memory, and a tool-using agent that plans before it acts. Her brain is Hermes 3 running on your own machine through [Ollama](https://ollama.com).
+A local desktop assistant with a JARVIS-style HUD: voice in and out, long-term memory, and a tool-using agent. Her brain is Hermes 3 on your machine through [Ollama](https://ollama.com).
 
-## The interface
+## What she keeps
 
-A reactor core that reacts to what she is doing — idle, listening, thinking, speaking — alongside live machine telemetry and your queued reminders. Three workspaces:
+- **Voice** — wake word, push-to-talk, Whisper on-device, ElevenLabs or local Piper speech
+- **Automation** — keyboard and mouse (off until you flip **AUTOMATION**)
+- **Desktop tools** — open apps/sites/folders, search files, clipboard, media keys, research, reminders, memory
 
-- **COMMS** — the conversation
-- **CORE** — activity log, memory archive, and a context snapshot
-- **VOICE** — speech engine, API key, and voice selection
+WhatsApp, Discord bots, phone LINK / ntfy, and the old hosted cloud twin are gone.
 
-## What she can do
+## Interface
 
-**Think.** Multi-part requests get a short plan before any tool runs. When a tool comes back empty she changes the arguments or switches tools instead of giving up, and a stalled reply gets one nudge rather than a shrug.
+- **COMMS** — conversation  
+- **CORE** — activity log and memory  
+- **VOICE** — speech engine and API key  
 
-**Act on this PC.** Open apps, sites, and folders. Search filenames, list directories, and read text files. Control playback and volume. Drive the keyboard and mouse when you flip on **AUTOMATION** (off by default). Report live CPU, memory, disk, and battery. Read and write the clipboard.
-
-**Research.** A single search for quick facts, or `deep_research` to search, actually read the top sources, and hand back notes with links to cite.
-
-**Remember.** Durable facts in a local SQLite archive, shown in the CORE tab. She also captures unmistakable personal facts on her own — your name, where you live, favourites, stated preferences — so a forgetful local model still keeps them.
-
-**Calculate.** Arithmetic goes through a real evaluator, never the model's guesswork.
-
-**Remind.** "Remind me to stretch in 20 minutes" — reminders are scheduled, shown on the HUD, and spoken when due.
+Left rail: wake word, spoken replies, automation consent, telemetry, reminders.
 
 ## Setup and run
 
@@ -36,63 +30,47 @@ Needs Python 3.12, Ollama, and a model (default `hermes3:8b`). First mic use dow
 
 ## Voice
 
-**ElevenLabs** gives her a natural voice. Open the **VOICE** tab, copy an API key from [elevenlabs.io → Developers → API Keys](https://elevenlabs.io/app/settings/api-keys) (it usually starts with `sk_`), then press **PASTE** or **SAVE**. A Voice ID is not the key. The key is stored in `data/secrets.json`, which git ignores; `ELEVENLABS_API_KEY` works too. If your account uses data residency, she will try the matching isolated API host automatically.
+**ElevenLabs** — VOICE tab → paste an `sk_` key from [elevenlabs.io → Developers → API Keys](https://elevenlabs.io/app/settings/api-keys). Stored in `data/secrets.json` (gitignored); `ELEVENLABS_API_KEY` also works.
 
-**Piper** runs on this PC with no account and no network. Install a voice once:
+**Piper** — fully local:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\setup_local_voice.ps1 -Voice Amy
 ```
 
-She falls back to Piper automatically whenever ElevenLabs is unreachable, unauthorized, or out of credits, so she never goes silent.
+She falls back to Piper if ElevenLabs fails.
 
-## Talking to her
+## Automation
 
-- Type in the composer and press Enter
-- **MIC** or **Ctrl+Space**, then speak; she stops at a pause
-- Turn on the wake word and say "Trinity, …"
+Off by default. Flip **AUTOMATION (MOUSE/KEYS)** or set `automation.enabled` to `true`. Then she can move/click/scroll, type, press keys, and send hotkeys via Win32 `SendInput`. Media play/volume still works without that switch.
 
 ## Try
 
-- "Open Discord"
+- "Open Spotify"
 - "What's 18 percent of 2,450?"
 - "Research the latest SpaceX launch and summarize it with sources"
 - "Remind me to stretch in 20 minutes"
-- "How's this machine doing?"
-- "Remember that my name is …"
-- (with AUTOMATION on) "Move the mouse to the center of the screen and click"
-- (with AUTOMATION on) "Type hello world and press Enter"
-- (with AUTOMATION on) "Press ctrl+c"
+- (automation on) "Type hello and press Enter"
+- (automation on) "Press ctrl+c"
 
-## Keyboard and mouse automation
-
-Off by default. Flip **AUTOMATION (MOUSE/KEYS)** in the left rail, or set `automation.enabled` to `true` in `config.json`. While it is on she can move/click/scroll the mouse, type text, press keys, and send hotkeys through Windows `SendInput` / `keybd_event`. Turn it off when you do not want her driving input.
-
-`config.json`
+## Config
 
 | Key | Meaning |
 | --- | --- |
-| `llm.model` | Local Ollama model (`hermes3:8b` handles tools well) |
-| `llm.base_url` | Must be loopback; she refuses a remote brain |
+| `llm.model` | Local Ollama model |
+| `llm.base_url` | Must be loopback |
 | `voice.engine` | `elevenlabs` or `piper` |
-| `voice.elevenlabs_voice_id` | Voice used for cloud speech |
-| `voice.elevenlabs_model` | Defaults to `eleven_turbo_v2_5` |
-| `voice.piper_voice` | Local fallback voice |
-| `voice.piper_length_scale` | Speaking pace; below 1.0 is faster |
-| `voice.wake_word` | Wake phrase when listening is armed |
-| `voice.whisper_model` | `tiny.en` or `base.en` |
-| `automation.enabled` | Allow keyboard/mouse tools (`false` by default) |
+| `voice.wake_word` | Wake phrase when armed |
+| `automation.enabled` | Keyboard/mouse tools (`false` by default) |
 
-Memory lives in `data/trinity.db`. **NEW SESSION** clears the conversation, not the archive.
+Memory: `data/trinity.db`. **NEW SESSION** clears chat, not the archive.
 
 ## Tests
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest tests.test_core
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-## Where your words go
+## Privacy
 
-Her reasoning, memory, and speech recognition run entirely on this PC, and she has no cloud-AI fallback, telemetry, or auto-updates.
-
-Three things reach the internet, all at your request: the research tools you ask her to use, links you ask her to open, and — if you choose ElevenLabs for speech — the text of her spoken replies, sent to ElevenLabs to be voiced. Switch the VOICE tab to Piper and she is fully offline again.
+Reasoning, memory, and speech recognition stay on this PC. Internet only for research/open-URL you ask for, and ElevenLabs if you choose it for spoken replies.

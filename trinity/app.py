@@ -627,7 +627,11 @@ class TrinityApp(ctk.CTk):
         self._trace("Wake-word listening enabled" if armed else "Wake-word listening disabled")
 
     def _toggle_speak(self) -> None:
-        self.voice.speak_replies = bool(self.speak_switch.get())
+        enabled = bool(self.speak_switch.get())
+        self.voice.speak_replies = enabled
+        self.cfg.setdefault("voice", {})["speak_replies"] = enabled
+        save_config(self.cfg)
+        self._trace("Spoken replies enabled" if enabled else "Spoken replies disabled")
 
     def _toggle_automation(self) -> None:
         from trinity import automation

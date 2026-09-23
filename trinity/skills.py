@@ -58,14 +58,14 @@ def schemas() -> list[dict[str, Any]]:
     return [
         _fn(
             "open_app",
-            "Launch an installed Windows application by name (Chrome, Discord, Spotify, Notepad, Cursor, etc.).",
+            "Launch an installed Windows application by name (Chrome, Spotify, Notepad, Cursor, etc.).",
             {"name": _str("App name as the user said it")},
             ["name"],
         ),
         _fn(
             "list_apps",
             "List installed apps, optionally filtered by a search string.",
-            {"query": _str("Optional filter, e.g. 'discord'")},
+            {"query": _str("Optional filter, e.g. 'spotify'")},
             [],
         ),
         _fn(
@@ -573,18 +573,11 @@ def _media_control(args: dict[str, Any], _m: Memory) -> str:
     if key is None:
         return f"I do not know the media action '{action}'."
     try:
-        _tap_key(key)
+        # Media keys stay available without the AUTOMATION consent switch.
+        automation.tap_virtual_key(key)
     except OSError as exc:
         return f"Could not send that key: {exc}"
     return f"Sent {action.replace('_', ' ')}."
-
-
-def _tap_key(code: int) -> None:
-    import ctypes
-
-    user32 = ctypes.windll.user32
-    user32.keybd_event(code, 0, 0, 0)
-    user32.keybd_event(code, 0, 2, 0)
 
 
 def _int_arg(args: dict[str, Any], *names: str, default: int | None = None) -> int | None:

@@ -331,10 +331,17 @@ def _mouse_wheel(amount: int) -> None:
     _mouse_event(0x0800, int(amount))
 
 
-def _tap_vk(code: int) -> None:
+def tap_virtual_key(code: int) -> None:
+    """Press one virtual-key code (no consent gate). Used by media_control too."""
+    if platform.system() != "Windows":
+        raise OSError(NOT_WINDOWS)
     _key_down(code)
     time.sleep(0.01)
     _key_up(code)
+
+
+def _tap_vk(code: int) -> None:
+    tap_virtual_key(code)
 
 
 def _key_down(code: int) -> None:
